@@ -1,0 +1,64 @@
+[build-system]
+requires = ["hatchling", "uv-dynamic-versioning>=0.7.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "giskardmcp"
+version = "0.1.0"
+description = "Giskard Red-Team Node -- Adversarial vulnerability scanning for local agent councils via MCP"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Sandra Schipal", email = "sandraschipal@gmail.com" }]
+keywords = ["mcp", "giskard", "red-team", "security", "llm-scanning"]
+dependencies = [
+    "fastmcp>=3.4.4,<4",
+    "starlette>=1.0.0",
+    "uvicorn[standard]>=0.34.0",
+    "httpx>=0.28.0",
+    "pydantic>=2.9.0",
+    "python-dotenv>=1.0.1",
+    "structlog>=24.4.0",
+    "giskard[llm]>=2.15.0",
+    "mcp>=1.0.0",
+]
+
+[project.scripts]
+giskard-mcp = "giskard_mcp.__main__:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.16.0,<0.17",
+    "mypy>=1.11.0",
+    "pyinstaller>=6.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+    "pytest-asyncio>=1.2.0",
+    "pytest-cov>=7.0.0",
+    "pyinstaller>=6.0.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/giskard_mcp"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+exclude = ["node_modules", "dist", ".venv", ".git"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "S", "A", "C4", "T20", "RET", "SIM", "ARG", "PTH", "TRY"]
+ignore = ["S104", "S310", "S311", "S314", "S608", "S604", "E402", "B008", "B904", "RUF006", "N806", "ANN001", "BLE001", "PLW1510", "S102", "S108", "S202", "SIM115", "SIM117", "E501", "F811", "RUF012", "B027", "B007", "RUF059", "S106", "S110", "S112", "S106", "S110", "S112", "RUF012", "S603", "S607", "S324", "E402", "E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

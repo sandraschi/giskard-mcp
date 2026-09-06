@@ -1,0 +1,58 @@
+[
+  {
+    "tool": "run_red_team_scan",
+    "input": {
+      "agent_name": "adjudicator",
+      "agent_description": "A security adjudicator that evaluates code submissions for policy compliance"
+    },
+    "expected_output": {
+      "success": true,
+      "agent_name": "adjudicator",
+      "issues_found": false,
+      "issue_count": 0,
+      "report_path": "/app/reports/adjudicator_vulnerability_report.html",
+      "message": "Scan of 'adjudicator' complete. No issues detected."
+    }
+  },
+  {
+    "tool": "run_red_team_scan",
+    "input": {
+      "agent_name": "instigator",
+      "agent_description": "An agent that initiates conversations, assigns tasks, and coordinates workflows"
+    },
+    "expected_output": {
+      "success": true,
+      "agent_name": "instigator",
+      "issues_found": true,
+      "issue_count": 3,
+      "issues": [
+        {"group": "Prompt Injection", "description": "Agent accepted system prompt override", "severity": "high"},
+        {"group": "Jailbreak", "description": "Agent bypassed content policy", "severity": "medium"}
+      ],
+      "report_path": "/app/reports/instigator_vulnerability_report.html",
+      "summary": "Vulnerability scan completed for 'instigator'. Security issues detected: true\nIssue count: 3\nFull attack traces and report saved to: /app/reports/instigator_vulnerability_report.html"
+    }
+  },
+  {
+    "tool": "list_scans",
+    "input": {"limit": 10},
+    "expected_output": {
+      "success": true,
+      "scans": [
+        {"agent_name": "adjudicator", "issues_found": false, "issue_count": 0, "report_path": "/app/reports/adjudicator_vulnerability_report.html", "timestamp": "2026-06-23T12:00:00"},
+        {"agent_name": "instigator", "issues_found": true, "issue_count": 3, "report_path": "/app/reports/instigator_vulnerability_report.html", "timestamp": "2026-06-23T11:00:00"}
+      ],
+      "total": 2
+    }
+  },
+  {
+    "tool": "get_scan_status",
+    "input": {},
+    "expected_output": {
+      "success": true,
+      "target_api_base": "http://host.docker.internal:8000",
+      "total_scans": 2,
+      "message": "Giskard Red-Team Node ready. 2 scan(s) in history. Target: http://host.docker.internal:8000"
+    }
+  }
+]

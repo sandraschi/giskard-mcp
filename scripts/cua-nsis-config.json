@@ -1,0 +1,8 @@
+{
+  "port": 11056,
+  "product_name": "Giskard Red-Team Node",
+  "nsis_glob": "*Giskard*setup.exe",
+  "window_title": "Giskard Red-Team Node",
+  "operator_exe": "giskard-mcp-native.exe",
+  "cua_smoke_version": "0.1.0"
+}

@@ -1,0 +1,24 @@
+{
+  "manifest_version": "0.2",
+  "name": "giskard-mcp",
+  "version": "0.1.0",
+  "description": "Automated adversarial red-teaming scans against local LLM agents using the Giskard library",
+  "author": { "name": "Sandra Schipal" },
+  "server": {
+    "type": "python",
+    "entry_point": "src/giskard_mcp/server.py",
+    "mcp_config": {
+      "command": "python",
+      "args": ["-m", "giskard_mcp"],
+      "env": {
+        "PYTHONPATH": "${PWD}",
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  },
+  "tools": [
+    { "name": "run_red_team_scan", "description": "Run an automated Giskard adversarial red-teaming scan against a local agent" },
+    { "name": "list_scans", "description": "List previously run red-team scans and their report paths" },
+    { "name": "get_scan_status", "description": "Return the current status of the Giskard Red-Team Node" }
+  ]
+}

@@ -1,0 +1,14 @@
+services:
+  giskard-mcp:
+    build: .
+    container_name: giskard-mcp
+    stdin_open: true
+    environment:
+      - AGENT_COUNCIL_URL=${AGENT_COUNCIL_URL:-http://goliath.local:8000}
+      - GISKARD_REPORT_DIR=/app/reports
+    volumes:
+      - giskard-reports:/app/reports
+    restart: unless-stopped
+
+volumes:
+  giskard-reports:

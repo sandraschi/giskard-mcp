@@ -1,0 +1,12 @@
+{
+  "name": "giskard-mcp",
+  "version": "0.1.0",
+  "description": "Giskard Red-Team Node -- Adversarial vulnerability scanning for local agent councils via MCP",
+  "repository": "https://github.com/sandraschi/giskard-mcp",
+  "category": "security",
+  "tags": ["red-team", "adversarial", "giskard", "llm-scanning", "vulnerability"],
+  "mcp": {
+    "transport": ["stdio", "http"],
+    "http_port": 11056
+  }
+}

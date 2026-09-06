@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  lint-python:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --only-group dev
+      - run: uv run ruff check src/
+      - run: uv run ruff format --check src/
+
+  lint-frontend:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: cd webapp/frontend && npm ci
+      - run: C:\Users\sandr\.local\bin\biome.exe check webapp/frontend/src/
+      - run: cd webapp/frontend && npx tsc --noEmit
+
+  test-python:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync
+      - run: uv run pytest tests/ -v
+
+  e2e:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync
+      - run: cd webapp/frontend && npm ci
+      - run: cd webapp/frontend && npx playwright install chromium
+      - name: Start backend
+        run: |
+          $env:GISKARD_MCP_PORT = "11056"
+          $job = Start-Job -ScriptBlock { param($d) Set-Location $d; uv run python -m giskard_mcp --serve } -ArgumentList "${{ github.workspace }}"
+          Start-Sleep 8
+          $job | Out-Null
+      - name: Start frontend
+        run: |
+          $job = Start-Job -ScriptBlock { param($d) Set-Location $d; npx vite --port 11057 --host } -ArgumentList "${{ github.workspace }}\webapp\frontend"
+          Start-Sleep 5
+          $job | Out-Null
+      - name: Run e2e tests
+        run: cd webapp/frontend && npx playwright test
+        shell: pwsh
+
+  build-frontend:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: cd webapp/frontend && npm ci
+      - run: cd webapp/frontend && npm run build

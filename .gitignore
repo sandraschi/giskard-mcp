@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+*.egg-info/
+dist/
+build/
+reports/
+uv.lock
+webapp/frontend/node_modules/
+webapp/frontend/dist/
+webapp/frontend/out/
+webapp/frontend/bun.lock
+webapp/frontend/test-results/
+*.tsbuildinfo

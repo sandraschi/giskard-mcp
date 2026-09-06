@@ -1,0 +1,38 @@
+# Logic/Dev Bloat
+.venv/
+node_modules/
+__pycache__/
+.ruff_cache/
+.pytest_cache/
+tests/
+*.egg-info/
+.python-version
+.pre-commit-config.yaml
+
+# Discovery & Fleet Metadata
+glama.json
+llms.txt
+llms-full.txt
+.git/
+.github/
+.vscode/
+
+# Build Artifacts
+dist/
+build/
+*.mcpb
+*.spec
+reports/
+data/
+uv.lock
+
+# Native/Tauri (not in MCPB)
+native/
+webapp/
+Dockerfile
+docker-compose.yml
+requirements.txt
+start.ps1
+start.bat
+justfile
+scripts/

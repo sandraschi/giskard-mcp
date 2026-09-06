@@ -1,0 +1,17 @@
+# Giskard Red-Team Node
+
+Adversarial vulnerability scanning for local agent councils via MCP.
+Uses Giskard LLM to run automated red-teaming scans against agents on the fleet network.
+
+## Quick start
+- `uv sync` -- install dependencies
+- `just mcp-http` -- start HTTP server on port 11056
+- `just mcp` -- start stdio server for Claude Desktop
+- `just docker-build && just docker-run` -- run in Docker
+
+## Tools
+- `run_red_team_scan` -- Run a Giskard adversarial scan against a target agent
+- `list_scans` -- List previously run scans
+- `get_scan_status` -- Server status and configuration
+
+See [llms-full.txt](llms-full.txt) for full documentation.

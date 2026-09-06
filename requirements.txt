@@ -1,0 +1,7 @@
+fastmcp>=3.4.2,<4
+giskard[llm]
+httpx>=0.27
+pandas>=2.0.0
+starlette>=0.46
+uvicorn[standard]>=0.32
+requests>=2.31.0

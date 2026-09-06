@@ -1,0 +1,55 @@
+# Giskard Red-Team Node -- Full Documentation
+
+## Architecture
+
+The Giskard Red-Team Node is an MCP server that wraps the Giskard LLM testing
+library to run automated adversarial red-teaming scans against local agent councils.
+
+### Transport Modes
+- **stdio**: Default for Claude Desktop / Cursor. Detected when GISKARD_PORT is unset.
+- **HTTP**: Set GISKARD_PORT=11070 to run as a uvicorn server with Starlette.
+
+### How scans work
+1. An LLM agent (via MCP) calls `run_red_team_scan` with a target agent name and description.
+2. Giskard's internal LLM generates adversarial attack prompts.
+3. Each prompt is sent to the target agent via HTTP POST to `{TARGET_BASE_URL}/{agent_name}/chat`.
+4. Giskard evaluates the responses for vulnerabilities (prompt injection, jailbreaking, etc.).
+5. A detailed HTML report is written to the `reports/` directory.
+
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| GISKARD_PORT | (unset) | Set to 11056 for HTTP mode |
+| GISKARD_HOST | 127.0.0.1 | Bind address for HTTP mode |
+| GISKARD_TARGET_BASE_URL | http://127.0.0.1:8000/api/agents | Base URL for target agents |
+| GISKARD_LLM_MODEL | gpt-4o | LLM model for Giskard's attack generation |
+| GISKARD_LLM_API_KEY | (falls back to OPENAI_API_KEY) | API key for Giskard's LLM |
+| GISKARD_REPORTS_DIR | ./reports | Directory for HTML scan reports |
+
+## MCP Tools
+
+### run_red_team_scan(agent_name, agent_description)
+Run a Giskard adversarial scan against a target agent.
+Returns: `{success, agent_name, issues_found, report_path, summary}`
+
+### list_scans(limit=20)
+List previously run scans and their report paths.
+Returns: `{success, scans[], total}`
+
+### get_scan_status()
+Return current server status and configuration.
+Returns: `{success, reports_dir, target_base_url, total_scans}`
+
+## Fleet Integration
+
+- **Port**: 11056 (Backend HTTP)
+- **Package**: giskardmcp
+- **Entry point**: giskard-mcp
+
+## Docker
+
+```bash
+docker build -t giskard-mcp .
+docker run --rm -it -p 11056:11056 -e GISKARD_PORT=11056 giskard-mcp
+```

@@ -1,0 +1,21 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.0
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+  - repo: local
+    hooks:
+      - id: biome-check
+        name: Biome check frontend
+        entry: powershell -NoProfile -Command "C:\Users\sandr\.local\bin\biome.exe check --fix webapp/frontend/src/"
+        language: system
+        files: ^webapp/frontend/src/
+        pass_filenames: false
+      - id: tsc
+        name: TypeScript check
+        entry: powershell -NoProfile -Command "cd webapp/frontend; npx tsc --noEmit"
+        language: system
+        files: ^webapp/frontend/src/
+        pass_filenames: false

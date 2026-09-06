@@ -1,0 +1,4 @@
+resources/*.exe
+binaries/*.exe
+src-tauri/target/
+src-tauri/gen/
