@@ -84,15 +84,11 @@ build-sidecar:
 
 # Build the Tauri NSIS desktop installer (full pipeline: frontend -> PyInstaller -> Rust -> NSIS)
 build-native:
-    Set-Location '{{justfile_directory()}}\native'
-    $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
-    .\build.ps1
+    Set-Location '{{justfile_directory()}}\native'; $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"; .\build.ps1
 
 # Build Tauri native app (debug, skip PyInstaller)
 build-native-debug:
-    Set-Location '{{justfile_directory()}}\native'
-    $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
-    npx @tauri-apps/cli build --debug
+    Set-Location '{{justfile_directory()}}\native'; $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"; npx @tauri-apps/cli build --debug
 
 # Run CUA-NSIS smoke test (install -> launch -> verify -> uninstall)
 cua-nsis-test:
