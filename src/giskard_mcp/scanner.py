@@ -6,6 +6,7 @@ LM Studio is auto-detected for Giskard's internal LLM calls.
 """
 
 import asyncio
+import contextlib
 import logging
 import os
 from pathlib import Path
@@ -352,6 +353,90 @@ class MCPConnectionError(ConnectionError):
         return f"Cannot open MCP session at {self.url} ({self.attempts})"
 
 
+def _flatten_mcp_error(exc: BaseException) -> str:
+    """Turn client noise (anyio ExceptionGroups, cancel scopes, httpx wrappers) into one line."""
+    parts: list[str] = []
+    seen: set[int] = set()
+
+    def text_of(e: BaseException) -> str:
+        text = str(e).strip().splitlines()[0] if str(e).strip() else ""
+        return text.split("For more information check:")[0].strip()
+
+    def walk(e: BaseException) -> None:
+        if id(e) in seen:
+            return
+        seen.add(id(e))
+        subs = getattr(e, "exceptions", None)
+        if subs:
+            for s in subs:
+                walk(s)
+            return
+        text = text_of(e)
+        # Cancel scopes mask the real failure -- dig into the chain.
+        if not text or "cancel scope" in text.lower() or text == type(e).__name__:
+            cause = getattr(e, "__cause__", None) or getattr(e, "__context__", None)
+            if isinstance(cause, BaseException):
+                walk(cause)
+                return
+        if text and text not in parts:
+            parts.append(text[:220])
+
+    walk(exc)
+    flat = "; ".join(parts) or type(exc).__name__
+    if "401" in flat or "403" in flat or "unauthorized" in flat.lower():
+        flat += " -- target requires authentication; this scanner supports open endpoints only"
+    elif "404" in flat:
+        flat += " -- not an MCP endpoint (wrong path?)"
+    elif "connect" in flat.lower() or "refused" in flat.lower():
+        flat += " -- target down or wrong port?"
+    return flat
+
+
+_PREFLIGHT_CACHE: dict[str, float] = {}
+_PREFLIGHT_TTL = 120.0
+
+
+async def _preflight_mcp(mcp_url: str) -> None:
+    """One cheap initialize POST with our own timeout, before opening a session.
+
+    The MCP clients can hang or collapse into cancel-scope noise on dead,
+    authed, or non-MCP endpoints. This surfaces the exact cause first.
+    Raises MCPConnectionError with a human message. Cached per URL (TTL).
+    """
+    import time
+
+    now = time.monotonic()
+    if now - _PREFLIGHT_CACHE.get(mcp_url, 0.0) < _PREFLIGHT_TTL:
+        return
+    body = {
+        "jsonrpc": "2.0",
+        "id": "giskard-preflight",
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {"name": "giskard-mcp", "version": "0.1.0"},
+        },
+    }
+    headers = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(mcp_url, json=body, headers=headers)
+    except Exception as e:
+        raise MCPConnectionError(mcp_url, f"nothing listening here ({_flatten_mcp_error(e)})") from e
+    if resp.status_code in (401, 403):
+        raise MCPConnectionError(
+            mcp_url,
+            f"HTTP {resp.status_code} Unauthorized -- target requires authentication; "
+            "this scanner supports open endpoints only",
+        )
+    if resp.status_code == 404:
+        raise MCPConnectionError(mcp_url, "HTTP 404 -- not an MCP endpoint (wrong path? try /mcp or /sse)")
+    if resp.status_code >= 400:
+        raise MCPConnectionError(mcp_url, f"HTTP {resp.status_code} on initialize")
+    _PREFLIGHT_CACHE[mcp_url] = now
+
+
 async def _open_mcp_session(mcp_url: str):
     """Yield (read, write) for a target MCP server, any transport.
 
@@ -364,17 +449,17 @@ async def _open_mcp_session(mcp_url: str):
 
     errors: list[str] = []
     try:
-        client = streamablehttp_client(mcp_url)
+        client = streamablehttp_client(mcp_url, timeout=30)
         streams = await client.__aenter__()
         return client, streams[0], streams[1], errors
     except Exception as e:
-        errors.append(f"streamable-http: {e!r}"[:200])
+        errors.append(f"streamable-http: {_flatten_mcp_error(e)}")
     try:
-        client = sse_client(mcp_url)
+        client = sse_client(mcp_url, timeout=30)
         streams = await client.__aenter__()
         return client, streams[0], streams[1], errors
     except Exception as e:
-        errors.append(f"sse: {e!r}"[:200])
+        errors.append(f"sse: {_flatten_mcp_error(e)}")
     raise MCPConnectionError(mcp_url, "; ".join(errors))
 
 
@@ -382,7 +467,9 @@ async def fetch_tools_from_mcp(mcp_url: str) -> list[dict]:
     """Connect to an MCP server and list its tools (any transport)."""
     from mcp import ClientSession
 
+    await _preflight_mcp(mcp_url)
     client, read, write, _errors = await _open_mcp_session(mcp_url)
+    pending: MCPConnectionError | None = None
     try:
         async with ClientSession(read, write) as session:
             await session.initialize()
@@ -404,8 +491,30 @@ async def fetch_tools_from_mcp(mcp_url: str) -> list[dict]:
                     }
                 )
             return out
+    except MCPConnectionError as e:
+        pending = e
+        raise
+    except BaseException as e:
+        # anyio cancel scopes surface session-internal failures as
+        # CancelledError. Only a cancel of OUR task may propagate.
+        task = asyncio.current_task()
+        if isinstance(e, asyncio.CancelledError) and task is not None and task.cancelling() > 0:
+            raise
+        pending = MCPConnectionError(mcp_url, _flatten_mcp_error(e))
+        raise pending from e
     finally:
-        await client.__aexit__(None, None, None)
+        # Session teardown can raise its own CancelledError that masks the
+        # real failure. Prefer the explanation, unless OUR task is being
+        # cancelled (job cancel must still propagate).
+        try:
+            await client.__aexit__(None, None, None)
+        except asyncio.CancelledError:
+            task = asyncio.current_task()
+            if pending is not None and (task is None or task.cancelling() == 0):
+                raise pending from None
+            raise
+        except Exception:
+            pass
 
 
 def _prompt_param(tools: list[dict], tool_name: str) -> str:
@@ -435,6 +544,10 @@ async def _call_mcp_tool_as(mcp_url: str, tool_name: str, arguments: dict) -> st
     """Call an MCP tool with explicit arguments (any transport)."""
     from mcp import ClientSession
 
+    try:
+        await _preflight_mcp(mcp_url)
+    except MCPConnectionError as e:
+        return f"CALL_ERROR: {e}"
     client, read, write, _errors = await _open_mcp_session(mcp_url)
     try:
         async with ClientSession(read, write) as session:
@@ -451,9 +564,11 @@ async def _call_mcp_tool_as(mcp_url: str, tool_name: str, arguments: dict) -> st
                     return "\n".join(parts) if parts else str(result)
                 return str(result)
             except Exception as e:
-                return f"CALL_ERROR: {e}"
+                return f"CALL_ERROR: {_flatten_mcp_error(e)}"
     finally:
-        await client.__aexit__(None, None, None)
+        # Worker-thread context: teardown noise must never kill the scan.
+        with contextlib.suppress(Exception, asyncio.CancelledError):
+            await client.__aexit__(None, None, None)
 
 
 async def call_mcp_tool(mcp_url: str, tool_name: str, prompt: str) -> str:

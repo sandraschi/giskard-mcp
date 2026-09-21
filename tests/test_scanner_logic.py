@@ -5,6 +5,8 @@ import pytest
 from giskard_mcp.scanner import (
     SCAN_PROFILES,
     LLMConfigError,
+    MCPConnectionError,
+    _flatten_mcp_error,
     _prompt_param,
     build_litellm_params,
     configure_giskard_llm,
@@ -83,6 +85,40 @@ def test_build_litellm_params_missing_pieces_raise():
 
 def test_configure_giskard_llm_needs_both():
     assert configure_giskard_llm("", "")["configured"] is False
+
+
+def test_flatten_unwraps_exception_groups():
+    import httpx
+
+    inner = httpx.HTTPStatusError(
+        "Client error '401 Unauthorized'",
+        request=None,  # type: ignore[arg-type]
+        response=None,  # type: ignore[arg-type]
+    )
+    group = BaseExceptionGroup("taskgroup", [inner])
+    flat = _flatten_mcp_error(group)
+    assert "401" in flat and "TaskGroup" not in flat
+    assert "authentication" in flat
+
+
+def test_flatten_digs_through_cancel_scope():
+    import asyncio
+
+    cancelled = asyncio.CancelledError()
+    cancelled.__cause__ = ConnectionError("boom")
+    flat = _flatten_mcp_error(cancelled)
+    assert "boom" in flat
+
+
+async def test_preflight_dead_port_is_precise():
+    from giskard_mcp.scanner import _preflight_mcp
+
+    try:
+        await _preflight_mcp("http://127.0.0.1:19999/mcp")
+    except MCPConnectionError as e:
+        assert "nothing listening" in str(e)
+    else:
+        pytest.fail("expected MCPConnectionError")
 
 
 def test_configure_giskard_llm_local_offline():

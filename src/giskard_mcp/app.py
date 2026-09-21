@@ -185,7 +185,10 @@ async def _run_scan_job(job_id: str, mcp_url: str, agent_description: str, profi
         try:
             tools = await fetch_tools_from_mcp(mcp_url)
         except Exception as e:
-            job.update({"status": "failed", "error": f"Cannot list tools at {mcp_url}: {e}"})
+            msg = str(e)
+            if not msg.startswith("Cannot open MCP session"):
+                msg = f"Cannot list tools at {mcp_url}: {msg}"
+            job.update({"status": "failed", "error": msg})
             return
         if not tools:
             job.update({"status": "failed", "error": f"Cannot list tools at {mcp_url}"})
