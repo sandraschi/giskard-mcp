@@ -443,10 +443,14 @@ async def chat(request):
         )
     full = [{"role": "system", "content": system}]
     full += [m for m in messages if isinstance(m, dict)][:20]
+    from .llm_providers import chat_complete, explain_provider_error
+
     try:
         text = await chat_complete(provider, model, full, endpoint)
     except Exception as e:
-        return JSONResponse({"success": False, "error": str(e)[:500]}, status_code=502)
+        return JSONResponse(
+            {"success": False, "error": explain_provider_error(str(e), provider, model)}, status_code=502
+        )
     return JSONResponse({"success": True, "content": text or "(empty response)", "model": model, "provider": provider})
 
 
@@ -497,12 +501,14 @@ async def llm_chat(request):
     endpoint = (body.get("endpoint") or "").strip()
     if not provider or not model or not messages:
         return JSONResponse({"success": False, "error": "provider, model, messages required"}, status_code=400)
-    from .llm_providers import chat_complete
+    from .llm_providers import chat_complete, explain_provider_error
 
     try:
         text = await chat_complete(provider, model, messages, endpoint)
     except Exception as e:
-        return JSONResponse({"success": False, "error": str(e)[:500]}, status_code=502)
+        return JSONResponse(
+            {"success": False, "error": explain_provider_error(str(e), provider, model)}, status_code=502
+        )
     return JSONResponse({"success": True, "content": text})
 
 

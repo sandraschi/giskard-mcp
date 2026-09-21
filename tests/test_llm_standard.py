@@ -70,6 +70,17 @@ def test_onboarding_shape():
     assert "recommendation" in state and "clouds_configured" in state
 
 
+def test_explain_provider_error_maps_to_instructions():
+    msg = llm.explain_provider_error("litellm.BadRequestError: No models loaded. Use 'lms load'.", "lmstudio", "m7b")
+    assert "no model loaded" in msg and "m7b" in msg
+    msg = llm.explain_provider_error("Incorrect API key provided", "openai", "gpt-4o-mini")
+    assert "key" in msg.lower()
+    msg = llm.explain_provider_error("Connection refused", "ollama", "")
+    assert "Start" in msg
+    msg = llm.explain_provider_error("", "vllm", "")
+    assert msg
+
+
 @pytest.fixture
 def client():
     import giskard_mcp.app as appmod

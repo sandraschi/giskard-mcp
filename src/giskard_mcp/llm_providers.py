@@ -597,6 +597,31 @@ def _port_hint(base_url: str) -> int | None:
         return None
 
 
+def explain_provider_error(exc_text: str, provider_id: str, model: str = "") -> str:
+    """Turn raw vendor/client errors into actionable instructions."""
+    text = (exc_text or "").strip()
+    low = text.lower()
+    label = (get_provider(provider_id) or {}).get("label", provider_id) or provider_id
+    model_bit = f" '{model}'" if model else ""
+    if "no models loaded" in low or "lms load" in low:
+        return (
+            f"{label} has no model loaded. Open {label} -> load{model_bit} for the API "
+            "server (Developer tab -> select + Load), then rescan. Or pick an already-loaded "
+            "model in Settings."
+        )
+    if "model_not_found" in low or ("not found" in low and "model" in low) or "does not exist" in low:
+        return f"Model{model_bit} is not available on {label}. Re-detect in Settings and pick a name exactly as listed."
+    if "incorrect api key" in low or "invalid api key" in low or "invalid_api_key" in low:
+        return f"{label} rejected the API key. Paste a fresh key in Settings -> Save -> Test."
+    if "401" in low or "403" in low or "unauthorized" in low or "forbidden" in low:
+        return f"{label} refused the request ({model_bit or 'auth'}). Check the key in Settings."
+    if "quota" in low or "rate limit" in low or "429" in low:
+        return f"{label} rate-limited/quota-exhausted. Wait or switch provider, then retry."
+    if "connect" in low or "refused" in low or "unreachable" in low or "timed out" in low or "timeout" in low:
+        return f"Cannot reach {label}. Start the engine first, then retry."
+    return text[:400] or f"{label} failed."
+
+
 def onboarding_state() -> dict[str, Any]:
     clouds = {r["id"]: is_configured(r["id"]) for r in PROVIDERS if r["kind"] == "cloud"}
     configured = [pid for pid, ok in clouds.items() if ok]

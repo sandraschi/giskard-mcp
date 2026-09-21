@@ -627,7 +627,12 @@ def run_giskard_scan(
     )
 
     only_tags = resolve_scan_tags(profiles)
-    scan_results = giskard.scan(giskard_model, only=only_tags)
+    try:
+        scan_results = giskard.scan(giskard_model, only=only_tags)
+    except Exception as e:
+        from .llm_providers import explain_provider_error
+
+        raise RuntimeError(explain_provider_error(str(e), llm_provider, llm_model)) from e
 
     report_path = str(Path(settings.local_reports_dir) / f"{agent_name}_vulnerability_report.html")
     scan_results.to_html(report_path)
