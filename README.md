@@ -11,9 +11,9 @@ you've never set up a local LLM.
 
 ## Preview
 
-| Dashboard |
-|-----------|
-| ![Dashboard](docs/screenshots/dashboard.png) |
+| Dashboard | Scans |
+|-----------|-------|
+| ![Dashboard](docs/screenshots/dashboard.png) | ![Scans](docs/screenshots/scans.png) |
 *Live status, LLM detection, fleet discovery and scan entry — dark Vite + Tailwind webapp on :11057.*
 
 ## What You Can Do
