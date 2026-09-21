@@ -1,7 +1,7 @@
 import { Bot, Loader2, MessageSquare, Send, User } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-
-const OLLAMA_URL = "http://127.0.0.1:11434/api/generate";
+import { Link } from "react-router-dom";
+import { api } from "../api/client";
 
 interface Message {
   role: "user" | "assistant";
@@ -13,28 +13,31 @@ export function ChatPage() {
     {
       role: "assistant",
       content:
-        "Hello! I'm connected to your local LLM (Ollama). Ask me anything about Giskard scans or security analysis.",
+        "Hello! I use the LLM configured in Settings - local (LM Studio / Ollama) or a cloud vendor. Ask me anything about Giskard scans or security analysis.",
     },
   ]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [ollamaOk, setOllamaOk] = useState<boolean | null>(null);
+  const [llmOk, setLlmOk] = useState<boolean | null>(null);
+  const [llmModel, setLlmModel] = useState("");
+  const [llmProvider, setLlmProvider] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  const checkOllama = useCallback(async () => {
+  const loadLlm = useCallback(async () => {
     try {
-      const res = await fetch(`${OLLAMA_URL.replace("/api/generate", "")}/api/tags`, {
-        signal: AbortSignal.timeout(3000),
-      });
-      setOllamaOk(res.ok);
+      const [s, d] = await Promise.all([api.getSettings(), api.detectLlm()]);
+      const cloud = ["openai", "anthropic", "azure"].includes(s.llm_provider || "");
+      setLlmModel(s.llm_model || d.model || "");
+      setLlmProvider(s.llm_provider || d.provider || "");
+      setLlmOk(cloud ? !!s.llm_model : d.success);
     } catch {
-      setOllamaOk(false);
+      setLlmOk(false);
     }
   }, []);
 
   useEffect(() => {
-    checkOllama();
-  }, [checkOllama]);
+    loadLlm();
+  }, [loadLlm]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -43,28 +46,29 @@ export function ChatPage() {
   const send = async () => {
     if (!input.trim() || loading) return;
     const userMsg: Message = { role: "user", content: input.trim() };
+    const history = [...messages, userMsg].filter((m) => m.content.length < 4000).slice(-20);
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
     setLoading(true);
 
+    // Via the backend proxy: keys stay server-side, any vendor works.
     try {
-      const res = await fetch(OLLAMA_URL, {
-        method: "POST",
-        body: JSON.stringify({
-          model: "llama3.2",
-          prompt: userMsg.content,
-          stream: false,
-        }),
-        signal: AbortSignal.timeout(30000),
-      });
-      const data = await res.json();
-      setMessages((prev) => [...prev, { role: "assistant", content: data.response || "(empty response)" }]);
-    } catch {
+      const res = await api.chat(history.map((m) => ({ role: m.role, content: m.content })));
+      setMessages((prev) => [...prev, { role: "assistant", content: res.content || "(empty response)" }]);
+      if (res.model) {
+        setLlmModel(res.model.replace(/^openai\/|^anthropic\/|^azure\//, ""));
+        setLlmProvider(res.provider || "");
+      }
+      setLlmOk(true);
+    } catch (e: any) {
+      const msg = String(e?.message || "Chat failed.");
       setMessages((prev) => [
         ...prev,
         {
           role: "assistant",
-          content: "Error: Could not reach Ollama. Make sure it's running on port 11434.",
+          content: /no llm configured/i.test(msg)
+            ? "No LLM configured yet. Go to Settings, pick a provider + model (and key for cloud vendors), Save - then chat here."
+            : `Error: ${msg} Check Settings - provider ${llmProvider || "unknown"}, model ${llmModel || "none"}.`,
         },
       ]);
     }
@@ -78,10 +82,19 @@ export function ChatPage() {
         Chat
       </h1>
 
-      {/* Ollama status */}
-      {ollamaOk === false && (
+      {/* LLM status - driven by backend Settings, never hardcoded */}
+      <div className="mb-4 flex items-center gap-2 text-xs">
+        <span className={`w-2 h-2 rounded-full ${llmOk ? "bg-green-500" : llmOk === false ? "bg-red-500" : "bg-zinc-500"}`} />
+        <span className="text-zinc-400">
+          {llmOk && llmModel ? `${llmProvider || "LLM"} - ${llmModel}` : llmOk ? "LLM detected, pick a model in Settings" : "No LLM detected"}
+        </span>
+        {(!llmOk || !llmModel) && (
+          <Link to="/settings" className="text-amber-400 hover:underline">Open Settings</Link>
+        )}
+      </div>
+      {llmOk === false && (
         <div className="mb-4 p-3 rounded-lg bg-amber-500/5 border border-amber-500/20 text-sm text-amber-400">
-          Ollama not detected on port 11434. Install Ollama for local LLM chat, or configure a cloud provider in
+          No LLM reachable. Start LM Studio (:1234) or Ollama (:11434) - or configure a cloud vendor + key in
           Settings.
         </div>
       )}

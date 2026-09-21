@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { Activity, Clock, FlaskConical, Radio, Search, Server, Shield, Target, Wifi } from "lucide-react";
+import { Activity, ArrowRight, BookOpen, Clock, FlaskConical, Radio, Search, Server, Shield, Target, Wifi, Zap } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useBackendStore } from "../store/backend";
 import { api, type FleetServer } from "../api/client";
@@ -53,10 +53,55 @@ export function Dashboard() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold text-zinc-100 mb-6 flex items-center gap-2">
-        <Shield className="text-amber-500" size={24} />
-        Dashboard
-      </h1>
+      {/* Hero - What is Giskard */}
+      <motion.section
+        data-testid="dashboard-hero"
+        initial={{ opacity: 0, y: -10 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="rounded-2xl border border-amber-500/20 bg-gradient-to-br from-amber-500/10 via-zinc-900/60 to-zinc-900/40 p-6 mb-6"
+      >
+        <div className="flex items-start gap-4">
+          <div className="p-3 rounded-xl bg-amber-500/15 border border-amber-500/20 flex-shrink-0">
+            <Shield className="text-amber-400" size={28} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <h1 className="text-2xl font-bold text-zinc-100 mb-1">
+              Giskard Red-Team Node
+            </h1>
+            <p className="text-sm text-zinc-300 mb-3 max-w-3xl">
+              Automated adversarial red-teaming for your local AI agents. Giskard - the open-source
+              LLM vulnerability scanner - generates attack prompts (prompt injection, harmful content,
+              data leakage, jailbreaks), routes them through your fleet MCP servers, and grades the
+              responses. Every run produces traceable issues plus a full HTML report.
+            </p>
+            <div className="flex flex-wrap gap-2 mb-4">
+              {["Prompt injection", "Data leakage", "Harmful content", "Jailbreaks"].map((t) => (
+                <span key={t} className="text-[11px] px-2 py-1 rounded-full border border-zinc-700 bg-zinc-800/60 text-zinc-300">
+                  {t}
+                </span>
+              ))}
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <Link
+                to="/scans"
+                data-testid="hero-scan-cta"
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-black font-medium transition-colors"
+              >
+                <Zap size={14} /> Run a scan <ArrowRight size={14} />
+              </Link>
+              <Link
+                to="/settings"
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-zinc-700 text-zinc-200 hover:border-zinc-500 transition-colors"
+              >
+                <BookOpen size={14} /> Connect LLM first
+              </Link>
+              <span className="text-[11px] text-zinc-500 ml-1">1. Start LM Studio/Ollama -&gt; 2. Discover fleet -&gt; 3. Scan -&gt; 4. Read report</span>
+            </div>
+          </div>
+        </div>
+      </motion.section>
+
+      <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-3">Live status</h2>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
         {cards.map((card, i) => (

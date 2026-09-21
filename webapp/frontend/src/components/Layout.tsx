@@ -242,14 +242,22 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 <button onClick={() => setHelpOpen(false)} className="p-1 text-zinc-400 hover:text-zinc-100"><X size={18} /></button>
               </div>
               <div className="space-y-3 text-sm text-zinc-300">
-                <p><strong className="text-zinc-100">Giskard Red-Team Node</strong> runs automated adversarial scans against local LLM agents using the Giskard library.</p>
+                <p><strong className="text-zinc-100">Giskard Red-Team Node</strong> runs automated adversarial scans against <em>live</em> MCP servers using the Giskard library. It cannot scan source code — run the repo first, then scan its endpoint.</p>
+                <div>
+                  <p className="text-zinc-200 font-medium mb-1">Scan any repo in 3 steps:</p>
+                  <ol className="list-decimal list-inside space-y-1 text-zinc-300">
+                    <li>Start it: local checkout via its <code className="text-amber-400">start.ps1</code>, GitHub clone via <code className="text-amber-400">git clone</code> + <code className="text-amber-400">uv sync</code> + run. Note its <em>backend</em> port.</li>
+                    <li>Settings: connect an LLM (LM Studio :1234 / Ollama :11434 auto-detected, or a vendor key). No LLM = every scan fails fast.</li>
+                    <li>Scans page: enter <code className="text-amber-400">http://127.0.0.1:&lt;backend-port&gt;/mcp</code>, pick a profile, Start. Poll the job; read the report; fix; rescan; compare.</li>
+                  </ol>
+                </div>
                 <div>
                   <p className="text-zinc-200 font-medium mb-1">Pages:</p>
                   <ul className="list-disc list-inside space-y-1 text-zinc-300">
                     {NAV.map((n) => <li key={n.path}><strong className="text-zinc-100">{n.label}</strong></li>)}
                   </ul>
                 </div>
-                <p>Environment: <code className="text-amber-400">GISKARD_LLM_API_URL</code></p>
+                <p>Full docs: <code className="text-amber-400">README.md</code> + <code className="text-amber-400">docs/</code> (ONBOARDING, TOOLS, TROUBLESHOOTING). Skill: <code className="text-amber-400">skill://giskard-redteam/SKILL.md</code>.</p>
               </div>
             </motion.div>
           </motion.div>
