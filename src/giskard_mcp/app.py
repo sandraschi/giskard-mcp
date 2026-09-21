@@ -1,7 +1,9 @@
 """Starlette HTTP app with REST API for the Giskard MCP webapp."""
 
+import asyncio
 import os
 import time
+import uuid
 from pathlib import Path
 
 from starlette.applications import Starlette
@@ -12,35 +14,33 @@ from starlette.staticfiles import StaticFiles
 
 from .config import settings
 from .server import SCANS_STORE, mcp
+from .store import (
+    add_target,
+    delete_report,
+    delete_scan,
+    load_app_settings,
+    load_records,
+    load_targets,
+    normalize_scan,
+    remove_target,
+    save_app_settings,
+    upsert_record,
+)
 
 BACKEND_PORT = settings.port
 FRONTEND_PORT = BACKEND_PORT + 1
 REPORTS_DIR = Path(settings.local_reports_dir)
 START_TIME = time.time()
 
-# In-memory settings store (persisted to JSON file)
-SETTINGS_FILE = Path(__file__).resolve().parent / "app_settings.json"
-_loaded_settings: dict = {}
+app_settings = load_app_settings()
 
+# Hydrate in-memory history from disk (idempotent across re-imports).
+if not SCANS_STORE:
+    SCANS_STORE.extend(load_records())
 
-def _load_persisted_settings() -> dict:
-    if SETTINGS_FILE.exists():
-        try:
-            import json
-
-            return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
-    return {}
-
-
-def _save_persisted_settings(data: dict):
-    import json
-
-    SETTINGS_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
-
-
-app_settings = _load_persisted_settings()
+# Background scan jobs: job_id -> record. Tasks tracked separately for cancel.
+JOBS: dict[str, dict] = {}
+_JOB_TASKS: dict[str, asyncio.Task] = {}
 
 
 async def health(_request):
@@ -67,11 +67,14 @@ async def api_status(_request):
 
 
 async def get_settings(_request):
+    # The API key is never returned -- only whether one is stored.
     return JSONResponse(
         {
             "success": True,
             "llm_url": app_settings.get("llm_url", settings.llm_api_url),
-            "llm_model": app_settings.get("llm_model", ""),
+            "llm_model": app_settings.get("llm_model", settings.llm_model),
+            "llm_provider": app_settings.get("llm_provider", ""),
+            "llm_api_key_set": bool(app_settings.get("llm_api_key", "")),
             "target_mcp_url": app_settings.get("target_mcp_url", ""),
         }
     )
@@ -81,13 +84,19 @@ async def save_settings(request):
     body = await request.json()
     app_settings["llm_url"] = body.get("llm_url", app_settings.get("llm_url", settings.llm_api_url))
     app_settings["llm_model"] = body.get("llm_model", app_settings.get("llm_model", ""))
+    app_settings["llm_provider"] = body.get("llm_provider", app_settings.get("llm_provider", ""))
+    # Only overwrite the stored key when a non-empty value is sent.
+    if (body.get("llm_api_key") or "").strip():
+        app_settings["llm_api_key"] = body["llm_api_key"].strip()
     app_settings["target_mcp_url"] = body.get("target_mcp_url", app_settings.get("target_mcp_url", ""))
-    _save_persisted_settings(app_settings)
-    return JSONResponse({"success": True, "settings": app_settings})
+    save_app_settings(app_settings)
+    masked = {k: v for k, v in app_settings.items() if k != "llm_api_key"}
+    masked["llm_api_key_set"] = bool(app_settings.get("llm_api_key", ""))
+    return JSONResponse({"success": True, "settings": masked})
 
 
 async def list_scans(_request):
-    scans = list(reversed(SCANS_STORE))
+    scans = [normalize_scan(s) for s in reversed(SCANS_STORE)]
     return JSONResponse({"success": True, "scans": scans, "total": len(scans)})
 
 
@@ -96,40 +105,159 @@ async def get_scan_detail(request):
     matches = [s for s in SCANS_STORE if s.get("agent_name") == agent_name]
     if not matches:
         return JSONResponse({"success": False, "error": f"No scan for '{agent_name}'"}, status_code=404)
-    return JSONResponse({"success": True, "scan": matches[-1]})
+    return JSONResponse({"success": True, "scan": normalize_scan(matches[-1])})
+
+
+async def delete_scan_record(request):
+    agent_name = request.path_params.get("agent_name")
+    global SCANS_STORE
+    kept, info = delete_scan(SCANS_STORE, agent_name)
+    SCANS_STORE[:] = kept
+    if not info["records_removed"]:
+        return JSONResponse({"success": False, "error": f"No scan for '{agent_name}'"}, status_code=404)
+    return JSONResponse({"success": True, "agent_name": agent_name, **info})
+
+
+def _resolve_llm(details: dict) -> tuple[str, str, str, str]:
+    """Resolve (url, model, provider, api_key) for judges and chat.
+
+    Cloud vendors need no live detection: saved provider + model + key
+    (or vendor env var) is enough. Local vendors prefer live detection
+    for the URL, saved settings for the model.
+    """
+    from .scanner import is_cloud_vendor, pick_chat_model, resolve_llm_key
+
+    provider = (app_settings.get("llm_provider") or details.get("provider") or "local").strip() or "local"
+    if provider in ("lm-studio", "ollama"):
+        provider = "local"
+    if is_cloud_vendor(provider):
+        url = app_settings.get("llm_url", "")
+        model = app_settings.get("llm_model", "")
+        key = resolve_llm_key(provider, app_settings.get("llm_api_key", ""))
+        return url, model, provider, key
+    url = details.get("url") or app_settings.get("llm_url") or settings.llm_api_url
+    model = app_settings.get("llm_model") or pick_chat_model(details.get("models") or [])
+    return url, model, "local", ""
+
+
+async def _run_scan_job(job_id: str, mcp_url: str, agent_description: str, profiles: list[str]):
+    job = JOBS[job_id]
+    try:
+        from .scanner import detect_llm_details, fetch_tools_from_mcp, run_giskard_scan
+
+        job["status"] = "detecting-llm"
+        details = await detect_llm_details()
+        llm_url, llm_model, llm_provider, llm_key = _resolve_llm(details)
+        if not llm_url or not llm_model:
+            job.update(
+                {
+                    "status": "failed",
+                    "error": "No LLM configured. Start LM Studio (:1234)/Ollama (:11434) or set a vendor model + key in Settings.",
+                }
+            )
+            return
+
+        job["status"] = "discovering-tools"
+        try:
+            tools = await fetch_tools_from_mcp(mcp_url)
+        except Exception as e:
+            job.update({"status": "failed", "error": f"Cannot list tools at {mcp_url}: {e}"})
+            return
+        if not tools:
+            job.update({"status": "failed", "error": f"Cannot list tools at {mcp_url}"})
+            return
+
+        agent_name = mcp_url.split("//")[-1].replace("/", "_").replace(":", "_")
+        tool_names = ", ".join(t["name"] for t in tools)
+        desc = agent_description or f"MCP server at {mcp_url} with tools: {tool_names}"
+
+        job.update({"status": "scanning", "agent_name": agent_name, "tools": tool_names})
+        # Blocking Giskard run goes to a worker thread so the loop stays alive.
+        result = await asyncio.to_thread(
+            run_giskard_scan, agent_name, desc, mcp_url, tools, profiles, llm_url, llm_model, llm_provider, llm_key
+        )
+
+        record = {
+            "agent_name": agent_name,
+            "target": mcp_url,
+            "issues_found": result["has_issues"],
+            "issue_count": result["issue_count"],
+            "total_issues": result["issue_count"],
+            "tools": tool_names,
+            "tools_scanned": len(tools),
+            "issues": result.get("issues", []),
+            "profiles": result.get("profiles", profiles),
+            "tags": result.get("tags", []),
+            "llm_model": llm_model,
+            "llm_provider": llm_provider,
+            "report_path": result["report_path"],
+            "timestamp": __import__("datetime").datetime.now().isoformat(),
+        }
+        upsert_record(SCANS_STORE, record)
+        job.update({"status": "complete", "result": normalize_scan(record)})
+    except asyncio.CancelledError:
+        job.update({"status": "cancelled"})
+        raise
+    except Exception as e:
+        job.update({"status": "failed", "error": str(e)})
+    finally:
+        job["finished"] = __import__("datetime").datetime.now().isoformat()
+        _JOB_TASKS.pop(job_id, None)
 
 
 async def trigger_scan(request):
     body = await request.json()
-    mcp_url = body.get("mcp_url", "")
+    mcp_url = (body.get("mcp_url") or "").strip()
     agent_description = body.get("agent_description", "")
+    raw_profiles = body.get("profiles", "")
+    if isinstance(raw_profiles, str):
+        profiles = [p.strip() for p in raw_profiles.split(",") if p.strip()]
+    elif isinstance(raw_profiles, list):
+        profiles = [str(p).strip() for p in raw_profiles if str(p).strip()]
+    else:
+        profiles = []
     if not mcp_url:
         return JSONResponse({"success": False, "error": "mcp_url required"}, status_code=400)
 
-    from .scanner import detect_llm, fetch_tools_from_mcp, run_giskard_scan
+    job_id = uuid.uuid4().hex[:12]
+    JOBS[job_id] = {
+        "job_id": job_id,
+        "status": "queued",
+        "target": mcp_url,
+        "profiles": profiles,
+        "created": __import__("datetime").datetime.now().isoformat(),
+    }
+    _JOB_TASKS[job_id] = asyncio.create_task(_run_scan_job(job_id, mcp_url, agent_description, profiles))
+    return JSONResponse({"success": True, "job_id": job_id, "status": "queued"}, status_code=202)
 
-    await detect_llm()
-    tools = await fetch_tools_from_mcp(mcp_url)
-    if not tools:
-        return JSONResponse({"success": False, "error": f"Cannot list tools at {mcp_url}"})
 
-    agent_name = mcp_url.split("//")[-1].replace("/", "_").replace(":", "_")
-    desc = agent_description or f"MCP server at {mcp_url}"
-    try:
-        result = run_giskard_scan(agent_name, desc, mcp_url, tools)
-        SCANS_STORE.append(
-            {
-                "agent_name": agent_name,
-                "target": mcp_url,
-                "issues_found": result["has_issues"],
-                "issue_count": result["issue_count"],
-                "report_path": result["report_path"],
-                "timestamp": __import__("datetime").datetime.now().isoformat(),
-            }
-        )
-        return JSONResponse({"success": True, **result})
-    except Exception as e:
-        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+async def list_jobs(_request):
+    jobs = sorted(JOBS.values(), key=lambda j: j.get("created", ""), reverse=True)
+    return JSONResponse({"success": True, "jobs": jobs, "total": len(jobs)})
+
+
+async def get_job(request):
+    job_id = request.path_params.get("job_id", "")
+    job = JOBS.get(job_id)
+    if not job:
+        return JSONResponse({"success": False, "error": f"No job '{job_id}'"}, status_code=404)
+    return JSONResponse({"success": True, "job": job})
+
+
+async def cancel_job(request):
+    job_id = request.path_params.get("job_id", "")
+    job = JOBS.get(job_id)
+    if not job:
+        return JSONResponse({"success": False, "error": f"No job '{job_id}'"}, status_code=404)
+    if job.get("status") in ("complete", "failed", "cancelled"):
+        return JSONResponse({"success": True, "job": job})
+    task = _JOB_TASKS.get(job_id)
+    if task and not task.done():
+        task.cancel()
+        job["status"] = "cancelling"
+    else:
+        job["status"] = "cancelled"
+    return JSONResponse({"success": True, "job": job})
 
 
 async def discover_servers(_request):
@@ -140,16 +268,38 @@ async def discover_servers(_request):
 
 
 async def detect_llm(_request):
-    from .scanner import detect_llm as dl
+    from .scanner import detect_llm_details as dl
+    from .scanner import pick_chat_model
 
-    url = await dl()
+    details = await dl()
+    url = details.get("url")
+    models = details.get("models", [])
+    saved_model = app_settings.get("llm_model", settings.llm_model)
+    active_model = saved_model or pick_chat_model(models)
     return JSONResponse(
         {
             "success": url is not None,
             "url": url or "",
+            "provider": details.get("provider", "none"),
+            "model": active_model,
+            "models": models,
             "endpoint_configured": settings.llm_api_url,
         }
     )
+
+
+async def llm_models(request):
+    """Model catalog for the active provider. Keys stay server-side.
+
+    Query: ?provider= (defaults to saved) &url= (defaults to saved, for
+    custom endpoints). Never returns any key.
+    """
+    from .scanner import list_provider_models
+
+    provider = request.query_params.get("provider", "") or app_settings.get("llm_provider", "") or "local"
+    url = request.query_params.get("url", "") or app_settings.get("llm_url", "")
+    result = await list_provider_models(provider, url, app_settings.get("llm_api_key", ""))
+    return JSONResponse(result)
 
 
 async def list_reports(_request):
@@ -178,7 +328,7 @@ async def report_summary(request):
     safe = Path(filename).name
     for scan in reversed(SCANS_STORE):
         if safe in scan.get("report_path", ""):
-            return JSONResponse({"success": True, "scan": scan})
+            return JSONResponse({"success": True, "scan": normalize_scan(scan)})
     return JSONResponse({"success": False, "error": "No matching scan"})
 
 
@@ -200,9 +350,76 @@ async def compare_reports(request):
         safe = Path(fname).name
         for scan in SCANS_STORE:
             if safe in scan.get("report_path", ""):
-                scans.append(scan)
+                scans.append(normalize_scan(scan))
                 break
     return JSONResponse({"success": True, "scans": scans})
+
+
+async def delete_report_file(request):
+    filename = request.path_params.get("filename", "")
+    kept, info = delete_report(SCANS_STORE, filename)
+    SCANS_STORE[:] = kept
+    if not info["file_removed"] and not info["records_removed"]:
+        return JSONResponse({"success": False, "error": "Report not found"}, status_code=404)
+    return JSONResponse({"success": True, "filename": Path(filename).name, **info})
+
+
+async def list_targets(_request):
+    targets = load_targets()
+    return JSONResponse({"success": True, "targets": targets, "total": len(targets)})
+
+
+async def create_target(request):
+    body = await request.json()
+    targets, msg = add_target(body.get("url", ""), body.get("label", ""), body.get("description", ""))
+    if targets is None:
+        return JSONResponse({"success": False, "error": msg}, status_code=400)
+    return JSONResponse({"success": True, "targets": targets, "total": len(targets), "message": msg})
+
+
+async def delete_target(request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    url = body.get("url", "") or request.query_params.get("url", "")
+    if not url:
+        return JSONResponse({"success": False, "error": "url required"}, status_code=400)
+    targets, removed = remove_target(url)
+    if not removed:
+        return JSONResponse({"success": False, "error": "Target not saved"}, status_code=404)
+    return JSONResponse({"success": True, "targets": targets, "total": len(targets)})
+
+
+async def chat(request):
+    """Chat completion proxy -- any vendor, keys stay server-side.
+
+    Body: {"messages": [{role, content}...], "system": optional}.
+    Runs litellm in a worker thread (sync client) so the loop stays alive.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"success": False, "error": "messages required"}, status_code=400)
+    messages = body.get("messages", [])
+    if not messages:
+        return JSONResponse({"success": False, "error": "messages required"}, status_code=400)
+    system = (body.get("system") or "You help with Giskard adversarial scan results and LLM security analysis.").strip()
+    from .scanner import chat_completion, detect_llm_details
+
+    details = await detect_llm_details()
+    llm_url, llm_model, llm_provider, llm_key = _resolve_llm(details)
+    if not llm_url or not llm_model:
+        return JSONResponse(
+            {"success": False, "error": "No LLM configured. Set provider + model in Settings."}, status_code=400
+        )
+    full = [{"role": "system", "content": system}]
+    full += [m for m in messages if isinstance(m, dict)][:20]
+    fallbacks = [m for m in (details.get("models") or []) if "embed" not in m.lower() and m != llm_model][:2]
+    result = await asyncio.to_thread(chat_completion, full, llm_url, llm_model, llm_provider, llm_key, fallbacks)
+    if not result.get("success"):
+        return JSONResponse(result, status_code=502)
+    return JSONResponse(result)
 
 
 async def list_tools(_request):
@@ -227,6 +444,15 @@ async def list_tools(_request):
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
 
+def _skill_name(uri: str) -> str:
+    """'skill://giskard-redteam/SKILL.md' -> 'giskard-redteam'."""
+    parts = [p for p in uri.split("/") if p and p != "SKILL.md"]
+    for p in reversed(parts):
+        if p not in ("skill:", "skill"):
+            return p
+    return uri
+
+
 async def list_skills(_request):
     try:
         resources = await mcp.list_resources()
@@ -234,7 +460,7 @@ async def list_skills(_request):
         for r in resources:
             uri = str(r.uri) if hasattr(r, "uri") else ""
             if "skill" in uri.lower():
-                skills.append({"name": uri.split("/")[-1].replace("SKILL.md", "").strip("/"), "uri": uri})
+                skills.append({"name": _skill_name(uri), "uri": uri})
         return JSONResponse({"success": True, "skills": skills})
     except Exception:
         return JSONResponse({"success": True, "skills": []})
@@ -246,9 +472,9 @@ async def get_skill(request):
         resources = await mcp.list_resources()
         for r in resources:
             uri = str(r.uri) if hasattr(r, "uri") else ""
-            if name in uri and "skill" in uri.lower():
+            if "skill" in uri.lower() and (name in uri or _skill_name(uri) == name):
                 content = await mcp.read_resource(uri)
-                return JSONResponse({"success": True, "name": name, "content": str(content)})
+                return JSONResponse({"success": True, "name": _skill_name(uri), "content": str(content)})
         return JSONResponse({"success": False, "error": "Skill not found"}, status_code=404)
     except Exception as e:
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
@@ -291,6 +517,8 @@ class SPAStaticFiles(StaticFiles):
         return response
 
 
+mcp_app = mcp.http_app(path="/")
+
 routes = [
     Route("/", health),
     Route("/health", health),
@@ -299,23 +527,36 @@ routes = [
     Route("/api/v1/settings", get_settings),
     Route("/api/v1/settings", save_settings, methods=["PUT"]),
     Route("/api/v1/scans", list_scans),
-    Route("/api/v1/scans/{agent_name}", get_scan_detail),
     Route("/api/v1/scans", trigger_scan, methods=["POST"]),
+    Route("/api/v1/scans/{agent_name}", get_scan_detail),
+    Route("/api/v1/scans/{agent_name}", delete_scan_record, methods=["DELETE"]),
+    Route("/api/v1/jobs", list_jobs),
+    Route("/api/v1/jobs/{job_id}", get_job),
+    Route("/api/v1/jobs/{job_id}", cancel_job, methods=["DELETE"]),
     Route("/api/v1/discover", discover_servers),
     Route("/api/v1/detect-llm", detect_llm),
+    Route("/api/v1/llm-models", llm_models),
+    Route("/api/v1/targets", list_targets),
+    Route("/api/v1/targets", create_target, methods=["POST"]),
+    Route("/api/v1/targets", delete_target, methods=["DELETE"]),
     Route("/api/v1/reports", list_reports),
+    Route("/api/v1/reports/compare", compare_reports, methods=["POST"]),
     Route("/api/v1/reports/{filename}", serve_report),
+    Route("/api/v1/reports/{filename}", delete_report_file, methods=["DELETE"]),
     Route("/api/v1/reports/{filename}/summary", report_summary),
     Route("/api/v1/reports/{filename}/html", report_html_content),
-    Route("/api/v1/reports/compare", compare_reports, methods=["POST"]),
     Route("/api/v1/tools", list_tools),
     Route("/api/v1/skills", list_skills),
     Route("/api/v1/skills/{name}", get_skill),
+    Route("/api/v1/chat", chat, methods=["POST"]),
     Route("/api/v1/diagnostics", diagnostics),
-    Mount(f"/{settings.mcp_http_path.lstrip('/')}", app=mcp.http_app(path=settings.mcp_http_path)),
+    # Mount path is stripped by Starlette, so the inner app serves from "/".
+    # (http_app(path="/mcp") here double-prefixes and 404s -- fleet standard
+    # is mount "/mcp" + inner path "/", e.g. calibre-mcp.)
+    Mount(f"/{settings.mcp_http_path.lstrip('/')}", app=mcp_app),
 ]
 
-app = Starlette(routes=routes)
+app = Starlette(routes=routes, lifespan=mcp_app.lifespan)
 _tauri = os.environ.get("GISKARD_TAURI", "").lower() in ("1", "true", "yes")
 app.add_middleware(
     CORSMiddleware,

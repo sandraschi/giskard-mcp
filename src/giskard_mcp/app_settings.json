@@ -1,5 +1,6 @@
 {
   "llm_url": "http://127.0.0.1:1234/v1",
   "llm_model": "",
-  "target_mcp_url": "http://127.0.0.1:10702/mcp"
+  "target_mcp_url": "http://127.0.0.1:10702/mcp",
+  "llm_provider": ""
 }
