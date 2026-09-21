@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import {
-  AlertTriangle, CheckCircle, ExternalLink, Eye, FileText, Maximize2,
-  Minimize2, Search, ShieldAlert, X, Columns2, LayoutGrid,
+  AlertTriangle, CheckCircle, ExternalLink, Eye, FileText,
+  Search, ShieldAlert, X, Columns2, LayoutGrid, Trash2, Loader2,
 } from "lucide-react";
 import { api, type ReportInfo, type ScanRecord } from "../api/client";
 
@@ -19,6 +19,7 @@ export function ReportsPage() {
   const [compareScans, setCompareScans] = useState<ScanRecord[]>([]);
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const load = useCallback(async () => {
@@ -62,6 +63,21 @@ export function ReportsPage() {
       setCompareScans(data.scans);
       setView("compare");
     } catch {}
+  };
+
+  const handleDelete = async (filename: string) => {
+    if (!window.confirm(`Delete report "${filename}"? This also drops its scan record and cannot be undone.`)) return;
+    setDeleting(filename);
+    try {
+      await api.reports.remove(filename);
+      setCompareList((prev) => prev.filter((f) => f !== filename));
+      if (selected?.filename === filename) {
+        setSelected(null);
+        setView("gallery");
+      }
+      await load();
+    } catch {}
+    setDeleting(null);
   };
 
   const filtered = reports.filter((r) =>
@@ -177,6 +193,14 @@ export function ReportsPage() {
                         >
                           <Columns2 size={14} />
                         </button>
+                        <button
+                          onClick={() => handleDelete(r.filename)}
+                          disabled={deleting === r.filename}
+                          className="p-1 rounded hover:bg-red-500/10 text-zinc-300 hover:text-red-400 disabled:opacity-50"
+                          title="Delete report + scan record"
+                        >
+                          {deleting === r.filename ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                        </button>
                       </div>
                     </div>
                     {scan && (
@@ -235,6 +259,13 @@ export function ReportsPage() {
               >
                 <ExternalLink size={12} /> Open
               </a>
+              <button
+                onClick={() => handleDelete(selected.filename)}
+                disabled={deleting === selected.filename}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs border border-red-500/40 text-red-400 hover:bg-red-500/10 disabled:opacity-50"
+              >
+                {deleting === selected.filename ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />} Delete
+              </button>
               <button
                 onClick={() => { setView("gallery"); setSelected(null); }}
                 className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs border border-zinc-700 text-zinc-300 hover:text-zinc-200"
