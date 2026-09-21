@@ -62,7 +62,7 @@ async def health(_request):
     return JSONResponse(
         {
             "ok": True,
-            "version": "0.1.0",
+            "version": "0.2.0",
             "service": "giskard-mcp",
             "port": BACKEND_PORT,
             "uptime_seconds": int(time.time() - START_TIME),
@@ -725,7 +725,7 @@ async def diagnostics(_request):
         {
             "ok": True,
             "service": "giskard-mcp",
-            "version": "0.1.0",
+            "version": "0.2.0",
             "uptime_seconds": int(time.time() - START_TIME),
             "port": BACKEND_PORT,
             "total_scans": len(SCANS_STORE),

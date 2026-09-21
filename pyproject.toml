@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "giskardmcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "Giskard Red-Team Node -- Adversarial vulnerability scanning for local agent councils via MCP"
 readme = "README.md"
 requires-python = ">=3.12"
