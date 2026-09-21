@@ -43,6 +43,16 @@ In `claude_desktop_config.json`:
 }
 ```
 
+## LLM keys (fleet standard)
+
+Cloud keys live in `data/llm_keys.json` (0600 best-effort, gitignored) or
+env vars, which win: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `AZURE_API_KEY`
+(+ `AZURE_API_VERSION`, default `2024-02-01`). REST: `POST
+/api/settings/llm` takes a write-only `api_key`; every GET returns
+`keys_configured` flags only; `DELETE /api/settings/llm/key?provider=`
+forgets one. The browser never sees key bytes; all vendor traffic goes
+through the backend (`POST /api/llm/chat`), never browser-to-provider.
+
 ## Data files (all under `reports/` unless `GISKARD_REPORTS_DIR` exists)
 
 | File | Contents |

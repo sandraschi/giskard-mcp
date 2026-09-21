@@ -78,28 +78,27 @@ def client():
 async def test_settings_never_leak_keys(client, monkeypatch):
     import giskard_mcp.app as appmod
 
-    monkeypatch.setattr(appmod, "app_settings", {"llm_url": "u", "llm_api_key": "SECRET"})
+    monkeypatch.setenv("OPENAI_API_KEY", "SECRET")
+    monkeypatch.setattr(appmod, "app_settings", {"llm_url": "u"})
     r = await client.get("/api/v1/settings")
     body = r.json()
     assert r.status_code == 200
     assert body["llm_api_key_set"] is True
+    assert body["keys_configured"]["openai"] is True
     assert "SECRET" not in json.dumps(body)
 
 
-async def test_settings_put_keeps_key_when_empty(client, monkeypatch):
+async def test_settings_put_routes_key_to_keystore(client, monkeypatch, tmp_path):
     import giskard_mcp.app as appmod
+    import giskard_mcp.llm_providers as llm
 
-    saved = {}
-
-    def fake_save(data):
-        saved.update(data)
-
-    monkeypatch.setattr(appmod, "app_settings", {"llm_api_key": "OLD"})
-    monkeypatch.setattr(appmod, "save_app_settings", fake_save)
-    r = await client.put("/api/v1/settings", json={"llm_provider": "local"})
+    monkeypatch.setattr(llm, "keystore_path", lambda: tmp_path / "llm_keys.json")
+    monkeypatch.setattr(appmod, "app_settings", {"llm_provider": "openai"})
+    monkeypatch.setattr(appmod, "save_app_settings", lambda _d: None)
+    r = await client.put("/api/v1/settings", json={"llm_provider": "openai", "llm_api_key": "sk-test"})
     assert r.status_code == 200
-    assert saved["llm_api_key"] == "OLD"
-    assert r.json()["settings"]["llm_api_key_set"] is True
+    assert llm.get_key("openai") == "sk-test"
+    assert "sk-test" not in json.dumps(r.json())
 
 
 async def test_scans_and_jobs_validation(client):

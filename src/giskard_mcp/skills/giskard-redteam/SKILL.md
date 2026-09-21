@@ -43,8 +43,13 @@ Profiles map to Giskard detector tags passed as `giskard.scan(only=[...])`:
 
 ## LLM Vendors (judges + chat)
 
-Provider is set in Settings and stored server-side. Key precedence:
-Settings value > vendor env var > none. Keys never leave the backend.
+Provider registry ids: `ollama`, `lmstudio`, `vllm` (local, free) +
+`openai`, `anthropic`, `azure` (cloud, key). Key precedence: env var
+(`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `AZURE_API_KEY`) > `data/
+llm_keys.json` keystore (0600 best-effort, gitignored). Keys never leave
+the backend: REST returns `keys_configured` flags only, and the key field
+is write-only. Local base URLs use `127.0.0.1`, never `localhost`
+(`localhost:1234` 404s on some Windows setups — IPv6 trap).
 
 - `lm-studio` / `ollama` / `custom` / `local` — OpenAI-compatible endpoint,
   no key. Auto-detected (`:1234`, `:11434`); model dropdown lists found

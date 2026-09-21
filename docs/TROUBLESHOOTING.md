@@ -1,5 +1,19 @@
 # Troubleshooting
 
+## Provider shows Not found but the engine is running
+
+**Cause**: `localhost` vs `127.0.0.1` mismatch (observed: `localhost:1234`
+404s while `127.0.0.1:1234` works — IPv6 trap on Windows).
+**Fix**: The registry already uses `127.0.0.1` for all local engines. If a
+custom endpoint misbehaves, retry it with the literal IPv4 address.
+
+## Model dropdown empty for a cloud vendor
+
+**Cause**: No key saved yet — unkeyed vendors only show curated names, and
+an empty curated list (Azure) shows the text field.
+**Fix**: Save the key in the provider card first, then Refresh. Azure never
+has a list: type the deployment name.
+
 ## No LLM configured (scan fails immediately)
 
 **Cause**: No LM Studio/Ollama running and no vendor model + key saved.
