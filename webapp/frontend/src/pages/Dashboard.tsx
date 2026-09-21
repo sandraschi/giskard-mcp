@@ -3,10 +3,15 @@ import { motion } from "framer-motion";
 import { Activity, ArrowRight, BookOpen, Clock, FlaskConical, Radio, Search, Server, Shield, Target, Wifi, Zap } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useBackendStore } from "../store/backend";
+import { subscribeLlmSelectionSync, useLlmStore } from "../store/llm";
 import { api, type FleetServer } from "../api/client";
 
 export function Dashboard() {
   const { connected, checkHealth } = useBackendStore();
+  const llm = useLlmStore();
+  const llmReady = !!llm.selectedProvider && !!llm.selectedModel;
+  const llmLabel =
+    llm.providers.find((p) => p.id === llm.selectedProvider)?.label || llm.selectedProvider;
   const [reportsCount, setReportsCount] = useState(0);
   const [uptime, setUptime] = useState(0);
   const [lmStudio, setLmStudio] = useState(false);
@@ -38,6 +43,11 @@ export function Dashboard() {
   }, []);
 
   useEffect(() => { refresh(); const i = setInterval(refresh, 10000); return () => clearInterval(i); }, [refresh]);
+  useEffect(() => {
+    if (!llm.selectedProvider) llm.probeAll();
+    return subscribeLlmSelectionSync();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const cards = [
     {
@@ -89,12 +99,19 @@ export function Dashboard() {
               >
                 <Zap size={14} /> Run a scan <ArrowRight size={14} />
               </Link>
-              <Link
-                to="/settings"
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-zinc-700 text-zinc-200 hover:border-zinc-500 transition-colors"
-              >
-                <BookOpen size={14} /> Connect LLM first
-              </Link>
+              {llmReady ? (
+                <span className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-green-500/30 text-green-400 text-xs">
+                  <Wifi size={14} /> {llmLabel} - {llm.selectedModel}
+                </span>
+              ) : (
+                <Link
+                  to="/settings"
+                  data-testid="hero-connect-llm"
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-amber-500/50 text-amber-400 hover:border-amber-400 transition-colors"
+                >
+                  <BookOpen size={14} /> Connect LLM first
+                </Link>
+              )}
               <span className="text-[11px] text-zinc-500 ml-1">1. Start LM Studio/Ollama -&gt; 2. Discover fleet -&gt; 3. Scan -&gt; 4. Read report</span>
             </div>
           </div>
