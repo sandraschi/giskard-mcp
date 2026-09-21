@@ -47,6 +47,19 @@ guidance, not just one tool call.
 
 ## REST API (webapp backend, :11056)
 
+Fleet-standard LLM surface (`/api/llm/...`, no `/v1`):
+
+- `GET /api/llm/providers` — registry + live local detection + models.
+- `GET /api/llm/models?provider=&endpoint=` — `{models, source:
+  live|curated|none}` (Azure: enter the deployment name, no list API).
+- `POST /api/llm/chat {provider, model, messages[], endpoint?}` and
+  `POST /api/llm/chat/stream` (OpenAI-style SSE).
+- `GET/POST /api/settings/llm`, `DELETE /api/settings/llm/key?provider=` —
+  selection + write-only keys (GET returns `keys_configured` flags only).
+- `GET /api/llm/gpus` (nvidia-smi VRAM), `GET /api/llm/onboarding`.
+
+Scanner/depot surface (`/api/v1/...`):
+
 - `POST /api/v1/scans {mcp_url, agent_description?, profiles?}` → **202 +
   `job_id`**. Poll `GET /api/v1/jobs/{job_id}` (`queued` → `detecting-llm` →
   `discovering-tools` → `scanning` → `complete`/`failed`); `DELETE` cancels.
