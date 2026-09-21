@@ -571,7 +571,13 @@ async def settings_llm_get(_request):
 
 
 async def settings_llm_post(request):
-    """Save selection; write-only api_key goes to the keystore."""
+    """Save selection; write-only api_key goes to the keystore.
+
+    Body: {provider?, endpoint?, model?, api_key?, select?}. Keys are
+    always attached to `provider`. Selection (provider/endpoint/model)
+    is only switched when select is not False -- so a key typed on a
+    non-active card can be saved without hijacking the active pair.
+    """
     try:
         body = await request.json()
     except Exception:
@@ -581,17 +587,20 @@ async def settings_llm_post(request):
     provider = (body.get("provider") or "").strip()
     if provider and not get_provider(provider):
         return JSONResponse({"success": False, "error": f"Unknown provider '{provider}'"}, status_code=400)
-    if provider:
+    switch = body.get("select", True)
+    if provider and switch:
         app_settings["llm_provider"] = provider
-    if "endpoint" in body:
+    if "endpoint" in body and switch:
         app_settings["llm_url"] = (body.get("endpoint") or "").strip()
-    if "model" in body:
+    if "model" in body and switch:
         app_settings["llm_model"] = (body.get("model") or "").strip()
     key_saved = False
     api_key = (body.get("api_key") or "").strip()
     if api_key:
+        if not provider:
+            return JSONResponse({"success": False, "error": "provider required with api_key"}, status_code=400)
         try:
-            save_key(app_settings.get("llm_provider", ""), api_key)
+            save_key(provider, api_key)
             key_saved = True
         except Exception as e:
             return JSONResponse({"success": False, "error": str(e)[:200]}, status_code=400)

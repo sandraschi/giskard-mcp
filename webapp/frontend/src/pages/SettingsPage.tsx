@@ -10,6 +10,7 @@ export function SettingsPage() {
   const llm = useLlmStore();
   const [targetUrl, setTargetUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
+  const [apiKeyFor, setApiKeyFor] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState("");
@@ -63,8 +64,17 @@ export function SettingsPage() {
     setSaving(true);
     setSaveError("");
     try {
-      const ok = await llm.persistSelection(apiKey || undefined);
-      if (apiKey) setApiKey("");
+      // A key typed on a card belongs to THAT provider, even when another
+      // one is selected. Save it first without switching the active pair.
+      if (apiKey && apiKeyFor) {
+        const { saveLlmSettings } = await import("../lib/provider");
+        await saveLlmSettings({ provider: apiKeyFor, model: "", api_key: apiKey, select: false });
+      }
+      const ok = await llm.persistSelection();
+      if (apiKey) {
+        setApiKey("");
+        setApiKeyFor("");
+      }
       if (targetUrl !== undefined) {
         await api.saveSettings({
           llm_url: "",
@@ -100,8 +110,9 @@ export function SettingsPage() {
     try {
       const { testProvider } = await import("../lib/provider");
       const isCloud = llm.providers.find((p) => p.id === id)?.kind === "cloud";
-      // Cloud cards validate the typed key when present, else the stored one.
-      const data = await testProvider(id, isCloud ? apiKey || undefined : undefined);
+      // Only the key typed on THIS card is offered; never another card's.
+      const typedKey = isCloud && apiKeyFor === id ? apiKey || undefined : undefined;
+      const data = await testProvider(id, typedKey);
       if (data.ok) {
         setCardNote((p) => ({
           ...p,
@@ -196,8 +207,11 @@ export function SettingsPage() {
                     <div className="mt-2 space-y-1.5" onClick={(e) => e.stopPropagation()}>
                       <input
                         type="password"
-                        value={apiKey}
-                        onChange={(e) => setApiKey(e.target.value)}
+                        value={apiKeyFor === p.id ? apiKey : ""}
+                        onChange={(e) => {
+                          setApiKeyFor(p.id);
+                          setApiKey(e.target.value);
+                        }}
                         placeholder={p.configured ? `Saved (${p.key_env}) - enter new to replace` : `Paste key or set ${p.key_env}`}
                         data-testid={`llm-key-${p.id}`}
                         autoComplete="off"

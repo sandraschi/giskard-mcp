@@ -118,6 +118,23 @@ async def test_standard_settings_roundtrip(client, monkeypatch):
     assert r.json()["keys_configured"]["anthropic"] is False
 
 
+async def test_key_save_without_switching_selection(client, monkeypatch):
+    import giskard_mcp.app as appmod
+
+    monkeypatch.setattr(appmod, "app_settings", {"llm_provider": "lmstudio", "llm_model": "m7b"})
+    monkeypatch.setattr(appmod, "save_app_settings", lambda _d: None)
+    r = await client.post(
+        "/api/settings/llm",
+        json={"provider": "anthropic", "model": "x", "api_key": "sk-t2", "select": False},
+        timeout=15,
+    )
+    assert r.status_code == 200 and r.json()["key_saved"] is True
+    r = await client.get("/api/settings/llm", timeout=15)
+    body = r.json()
+    assert body["provider"] == "lmstudio" and body["model"] == "m7b"
+    assert body["keys_configured"]["anthropic"] is True
+
+
 async def test_standard_chat_validation(client):
     r = await client.post("/api/llm/chat", json={"provider": "openai"}, timeout=15)
     assert r.status_code == 400

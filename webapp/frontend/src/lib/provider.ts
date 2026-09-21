@@ -186,6 +186,7 @@ export function saveLlmSettings(body: {
   endpoint?: string;
   model: string;
   api_key?: string;
+  select?: boolean;
 }): Promise<{ success: boolean; key_saved?: boolean }> {
   return request("/settings/llm", { method: "POST", body: JSON.stringify(body) });
 }
