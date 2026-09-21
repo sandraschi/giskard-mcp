@@ -59,6 +59,9 @@ ignore = ["S104", "S310", "S311", "S314", "S608", "S604", "E402", "B008", "B904"
 quote-style = "double"
 indent-style = "space"
 
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "ARG001"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
