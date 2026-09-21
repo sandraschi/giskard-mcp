@@ -1,6 +1,6 @@
 {
-  "llm_url": "http://127.0.0.1:1234/v1",
-  "llm_model": "deepseek-r1-distill-qwen-7b",
+  "llm_url": "",
+  "llm_model": "gemma4:e2b",
   "target_mcp_url": "http://127.0.0.1:10702/mcp",
-  "llm_provider": "lmstudio"
+  "llm_provider": "ollama"
 }
