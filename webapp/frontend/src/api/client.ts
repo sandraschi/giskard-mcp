@@ -125,7 +125,12 @@ export interface SavedTarget {
 }
 
 export const api = {
-  health: () => request<{ ok: boolean }>("/health"),
+  // NOTE: /api/health lives outside the /api/v1 prefix (fleet convention).
+  health: async () => {
+    const res = await fetch("/api/health");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.json() as Promise<{ ok: boolean }>;
+  },
   status: () => request<StatusInfo>("/status"),
   diagnostics: () => request<DiagnosticsInfo>("/diagnostics"),
   detectLlm: () => request<DetectLlmInfo>("/detect-llm"),

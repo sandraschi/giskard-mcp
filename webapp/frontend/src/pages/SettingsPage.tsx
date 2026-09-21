@@ -1,26 +1,20 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  FlaskConical, Globe, Key, Loader2, RefreshCw, Save, Server, Target, Wifi,
+  Check, Cpu, FlaskConical, Key, Loader2, RefreshCw, Save, Server, Target, Trash2, Wifi,
 } from "lucide-react";
-import { api, type AppSettings } from "../api/client";
+import { api } from "../api/client";
+import { deleteLlmKey } from "../lib/provider";
+import { useLlmStore } from "../store/llm";
 
 export function SettingsPage() {
-  const [settings, setSettings] = useState<AppSettings>({
-    llm_url: "http://127.0.0.1:1234/v1",
-    llm_model: "",
-    llm_provider: "",
-    target_mcp_url: "",
-  });
-  const [llmOk, setLlmOk] = useState<boolean | null>(null);
-  const [provider, setProvider] = useState("");
-  const [models, setModels] = useState<string[]>([]);
-  const [catalog, setCatalog] = useState<string[]>([]);
-  const [catalogNote, setCatalogNote] = useState("");
-  const [catalogLoading, setCatalogLoading] = useState(false);
+  const llm = useLlmStore();
+  const [targetUrl, setTargetUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
-  const [keySaved, setKeySaved] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const [keyBusy, setKeyBusy] = useState("");
+  const [cardNote, setCardNote] = useState<Record<string, string>>({});
   const [restarting, setRestarting] = useState(false);
   const [backendOk, setBackendOk] = useState<boolean | null>(null);
 
@@ -31,75 +25,12 @@ export function SettingsPage() {
     } catch { setBackendOk(false); }
   }, []);
 
-  const loadCatalog = useCallback(async (prov: string, url: string) => {
-    setCatalogLoading(true);
-    setCatalogNote("");
-    try {
-      const data = await api.llmModels(prov, url);
-      setCatalog(data.models || []);
-      if (data.note) setCatalogNote(data.note);
-      else if (!data.success && data.error) setCatalogNote(data.error);
-    } catch {
-      setCatalog([]);
-    }
-    setCatalogLoading(false);
+  useEffect(() => {
+    checkHealth();
+    llm.probeAll();
+    api.getSettings().then((s) => setTargetUrl(s.target_mcp_url)).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  const load = useCallback(async () => {
-    try {
-      const [s, d] = await Promise.all([api.getSettings(), api.detectLlm()]);
-      const prov = s.llm_provider || d.provider || "";
-      setSettings({
-        llm_url: s.llm_url,
-        llm_model: s.llm_model || d.model || "",
-        llm_provider: prov,
-        target_mcp_url: s.target_mcp_url,
-      });
-      setKeySaved(!!s.llm_api_key_set);
-      setLlmOk(d.success);
-      setProvider(d.provider || "");
-      setModels(d.models || []);
-      await loadCatalog(prov, s.llm_url);
-    } catch { await checkHealth(); }
-  }, [checkHealth, loadCatalog]);
-
-  const detectNow = useCallback(async () => {
-    setLlmOk(null);
-    try {
-      const d = await api.detectLlm();
-      setLlmOk(d.success);
-      setProvider(d.provider || "");
-      setModels(d.models || []);
-      const cloud = ["openai", "anthropic", "azure"].includes(settings.llm_provider || "");
-      const prov = cloud ? settings.llm_provider || "" : d.provider;
-      if (!cloud && d.success) {
-        setSettings((p) => ({
-          ...p,
-          llm_url: d.url || p.llm_url,
-          llm_provider: d.provider,
-          llm_model: p.llm_model || d.model || "",
-        }));
-      }
-      await loadCatalog(prov, cloud ? settings.llm_url : "");
-    } catch { setLlmOk(false); }
-  }, [loadCatalog, settings.llm_provider, settings.llm_url]);
-
-  useEffect(() => { load(); }, [load]);
-
-  const handleSave = async () => {
-    setSaving(true);
-    try {
-      const res = await api.saveSettings({ ...settings, llm_api_key: apiKey });
-      setKeySaved(!!(res as { settings?: { llm_api_key_set?: boolean } }).settings?.llm_api_key_set || (keySaved && !apiKey));
-      setApiKey("");
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
-    } catch {}
-    setSaving(false);
-  };
-
-  const activeProvider = settings.llm_provider || provider;
-  const isCloud = ["openai", "anthropic", "azure"].includes(activeProvider);
 
   const restartBackend = useCallback(async () => {
     setRestarting(true);
@@ -128,6 +59,63 @@ export function SettingsPage() {
     return () => { if (unlisten) unlisten(); };
   }, [checkHealth]);
 
+  const handleSave = async () => {
+    setSaving(true);
+    setSaveError("");
+    try {
+      const ok = await llm.persistSelection(apiKey || undefined);
+      if (apiKey) setApiKey("");
+      if (targetUrl !== undefined) {
+        await api.saveSettings({
+          llm_url: "",
+          llm_model: llm.selectedModel,
+          llm_provider: llm.selectedProvider,
+          target_mcp_url: targetUrl,
+        }).catch(() => null);
+      }
+      if (ok) {
+        setSaved(true);
+        setTimeout(() => setSaved(false), 2000);
+      } else {
+        setSaveError("Save failed - is the backend reachable?");
+      }
+    } catch {
+      setSaveError("Save failed - is the backend reachable?");
+    }
+    setSaving(false);
+  };
+
+  const handleForgetKey = async (id: string) => {
+    setKeyBusy(id);
+    try {
+      await deleteLlmKey(id);
+      await llm.probeAll();
+    } catch {}
+    setKeyBusy("");
+  };
+
+  const handleTestCard = async (id: string) => {
+    setCardNote((p) => ({ ...p, [id]: "Probing..." }));
+    try {
+      const { fetchModels } = await import("../lib/provider");
+      const data = await fetchModels(id);
+      setCardNote((p) => ({
+        ...p,
+        [id]: data.models.length > 0
+          ? `${data.models.length} model(s), source: ${data.source}`
+          : data.note || data.error || "No models found",
+      }));
+      await llm.probeAll();
+    } catch (e: any) {
+      setCardNote((p) => ({ ...p, [id]: e.message }));
+    }
+  };
+
+  const selected = llm.providers.find((p) => p.id === llm.selectedProvider);
+  const anyUsable = llm.providers.some(
+    (p) => llm.providerStatus[p.id] === "detected" && (p.kind === "local" || p.configured),
+  );
+
   return (
     <div>
       <h1 className="text-2xl font-bold text-zinc-100 mb-6 flex items-center gap-2">
@@ -153,134 +141,177 @@ export function SettingsPage() {
           )}
         </div>
 
-        {/* LLM Provider */}
+        {/* LLM Providers */}
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-5">
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center justify-between mb-1">
             <h2 className="text-sm font-semibold text-zinc-300 flex items-center gap-2">
               <FlaskConical size={16} className="text-amber-500" />
-              LLM Provider - attack generation + chat
+              LLM Providers - judges + chat
             </h2>
-            <button onClick={detectNow} data-testid="llm-redetect" className="flex items-center gap-1 text-[10px] px-2 py-1 rounded bg-zinc-800 text-zinc-300 hover:text-zinc-200">
-              <RefreshCw size={10} /> Re-detect
+            <button onClick={() => llm.probeAll()} disabled={llm.probing} data-testid="llm-redetect" className="flex items-center gap-1 text-[10px] px-2 py-1 rounded bg-zinc-800 text-zinc-300 hover:text-zinc-200 disabled:opacity-50">
+              <RefreshCw size={10} className={llm.probing ? "animate-spin" : ""} /> Re-detect
             </button>
           </div>
+          <p className="text-[11px] text-zinc-500 mb-4">Local engines are free. Cloud vendors need a key (stored server-side only). Selection saves to this browser + the backend.</p>
 
-          {llmOk && (
-            <div className="mb-3 p-3 rounded-lg bg-green-500/5 border border-green-500/20 text-xs text-green-400">
-              <div className="flex items-center gap-1.5 font-medium mb-1">
-                <Wifi size={12} /> {provider === "lm-studio" ? "LM Studio detected on :1234" : provider === "ollama" ? "Ollama detected on :11434" : `Provider detected: ${provider}`}
-              </div>
-              {models.length > 0 && <p className="text-green-500/80">{models.length} model(s) available - pick one below.</p>}
-            </div>
-          )}
-          {llmOk === false && (
+          {llm.error && <p className="mb-3 text-xs text-red-400">{llm.error} — is the backend running the new code?</p>}
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-4">
+            {llm.providers.map((p) => {
+              const st = llm.providerStatus[p.id] || "probing";
+              const active = llm.selectedProvider === p.id;
+              return (
+                <div
+                  key={p.id}
+                  data-testid={`llm-provider-card-${p.id}`}
+                  onClick={() => llm.selectProvider(p.id)}
+                  className={`rounded-lg border p-3 cursor-pointer transition-colors ${
+                    active ? "border-amber-500/60 bg-amber-500/5" : "border-zinc-800 bg-zinc-900/40 hover:border-zinc-600"
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-sm font-medium text-zinc-200 flex items-center gap-1.5">
+                      {active && <Check size={12} className="text-amber-400" />}
+                      {p.label}
+                    </span>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded ${p.kind === "local" ? "bg-green-500/10 text-green-400" : "bg-blue-500/10 text-blue-400"}`}>
+                      {p.kind === "local" ? "Local / free" : "Cloud / paid"}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5 text-[11px] text-zinc-400">
+                    <span className={`w-1.5 h-1.5 rounded-full ${st === "probing" ? "bg-zinc-500" : st === "detected" ? "bg-green-500" : "bg-red-500"}`} />
+                    {st === "probing" ? "Probing..." : st === "detected"
+                      ? (p.kind === "local" ? `Detected${p.models?.length ? ` - ${p.models.length} models` : ""}` : p.configured ? "Key configured" : "Needs key")
+                      : p.kind === "local" ? "Not found" : p.configured ? "Key saved" : "No key"}
+                  </div>
+                  {p.kind === "cloud" && active && (
+                    <div className="mt-2 space-y-1.5" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="password"
+                        value={apiKey}
+                        onChange={(e) => setApiKey(e.target.value)}
+                        placeholder={p.configured ? `Saved (${p.key_env}) - enter new to replace` : `Paste key or set ${p.key_env}`}
+                        data-testid={`llm-key-${p.id}`}
+                        autoComplete="off"
+                        className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-2.5 py-1.5 text-xs text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-amber-500/50"
+                      />
+                      <div className="flex gap-1.5">
+                        <button
+                          onClick={() => handleTestCard(p.id)}
+                          data-testid={`llm-test-${p.id}`}
+                          className="text-[10px] px-2 py-1 rounded bg-zinc-800 text-zinc-300 hover:text-zinc-200"
+                        >
+                          Test
+                        </button>
+                        {p.configured && (
+                          <button
+                            onClick={() => handleForgetKey(p.id)}
+                            disabled={keyBusy === p.id}
+                            className="flex items-center gap-1 text-[10px] px-2 py-1 rounded bg-zinc-800 text-red-400 hover:bg-red-500/10 disabled:opacity-50"
+                          >
+                            <Trash2 size={10} /> {keyBusy === p.id ? "Forgetting..." : "Forget key"}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  {p.kind === "local" && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleTestCard(p.id); }}
+                      data-testid={`llm-test-${p.id}`}
+                      className="mt-1.5 text-[10px] px-2 py-0.5 rounded bg-zinc-800 text-zinc-400 hover:text-zinc-200"
+                    >
+                      Test
+                    </button>
+                  )}
+                  {cardNote[p.id] && <p className="mt-1.5 text-[10px] text-zinc-400">{cardNote[p.id]}</p>}
+                </div>
+              );
+            })}
+          </div>
+
+          {!llm.probing && !anyUsable && (
             <div className="mb-3 p-3 rounded-lg bg-amber-500/5 border border-amber-500/20 text-xs text-amber-400">
-              No local LLM detected. Start LM Studio (:1234, API server on) or Ollama (:11434), hit Re-detect - or pick a cloud vendor below.
+              No usable LLM. Start LM Studio (:1234) or Ollama (:11434) — or save a cloud key above.
             </div>
           )}
-          {llmOk === null && (
-            <div className="mb-3 flex items-center gap-2 text-xs text-zinc-500"><Loader2 size={12} className="animate-spin" /> Detecting...</div>
-          )}
 
-          <div className="space-y-3">
+          {/* Active pair */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="text-xs text-zinc-300 mb-1 block">Provider</label>
               <select
-                value={settings.llm_provider || provider}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  const url =
-                    v === "ollama" ? "http://127.0.0.1:11434/v1"
-                    : v === "lm-studio" ? "http://127.0.0.1:1234/v1"
-                    : v === "openai" ? ""
-                    : settings.llm_url;
-                  setSettings((p) => ({ ...p, llm_provider: v, llm_url: url }));
-                  setProvider(v);
-                  setCatalog([]);
-                  loadCatalog(v, url);
-                }}
+                value={llm.selectedProvider}
+                onChange={(e) => llm.selectProvider(e.target.value)}
                 data-testid="llm-provider-select"
                 className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:border-amber-500/50"
               >
-                <option value="">Auto (detected: {provider || "none"})</option>
-                <option value="lm-studio">LM Studio - :1234/v1 (OpenAI-compatible)</option>
-                <option value="ollama">Ollama - :11434/v1</option>
-                <option value="custom">Custom OpenAI-compatible endpoint</option>
-                <option value="openai">OpenAI (cloud, needs key)</option>
-                <option value="anthropic">Anthropic (cloud, needs key)</option>
-                <option value="azure">Azure OpenAI (endpoint + deployment + key)</option>
+                <option value="">{llm.probing ? "Probing..." : "No local LLM detected"}</option>
+                {llm.providers
+                  .filter((p) => llm.providerStatus[p.id] === "detected" || p.id === llm.selectedProvider)
+                  .map((p) => (
+                    <option key={p.id} value={p.id}>{p.label}</option>
+                  ))}
               </select>
             </div>
-            <div>
-              <label className="text-xs text-zinc-300 mb-1 block flex items-center gap-1"><Globe size={12} />
-                {activeProvider === "azure" ? "Azure endpoint" : activeProvider === "openai" ? "API base (optional)" : "API URL"}
-              </label>
-              <input value={settings.llm_url} onChange={(e) => setSettings((p) => ({ ...p, llm_url: e.target.value }))}
-                placeholder={activeProvider === "azure" ? "https://YOUR.openai.azure.com" : activeProvider === "openai" ? "blank = api.openai.com" : ""}
-                data-testid="llm-url-input"
-                className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-amber-500/50" />
-              <p className="text-[10px] text-zinc-300 mt-1">LM Studio: 127.0.0.1:1234/v1 &bull; Ollama: 127.0.0.1:11434/v1 &bull; Azure: endpoint + deployment name as model</p>
-            </div>
-            {isCloud && (
-              <div>
-                <label className="text-xs text-zinc-300 mb-1 block flex items-center gap-1"><Key size={12} /> API key {keySaved && <span className="text-green-400">(saved)</span>}</label>
-                <input
-                  type="password"
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder={keySaved ? "Saved - enter a new key to replace" : "sk-... (or set OPENAI_API_KEY / ANTHROPIC_API_KEY / AZURE_API_KEY env)"}
-                  data-testid="llm-key-input"
-                  autoComplete="off"
-                  className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-amber-500/50" />
-                <p className="text-[10px] text-zinc-500 mt-1">Stored server-side only, never sent to the browser. Empty = keep existing.</p>
-              </div>
-            )}
             <div>
               <div className="flex items-center justify-between mb-1">
                 <label className="text-xs text-zinc-300 flex items-center gap-1"><Key size={12} /> Model</label>
                 <button
-                  onClick={() => loadCatalog(settings.llm_provider || provider, settings.llm_url)}
-                  disabled={catalogLoading}
+                  onClick={() => llm.refreshModels()}
+                  disabled={llm.modelsLoading || !llm.selectedProvider}
                   className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded bg-zinc-800 text-zinc-300 hover:text-zinc-200 disabled:opacity-50"
-                  title="Refresh model list for this provider"
                 >
-                  <RefreshCw size={10} className={catalogLoading ? "animate-spin" : ""} />
-                  {catalogLoading ? "Loading..." : "Refresh models"}
+                  <RefreshCw size={10} className={llm.modelsLoading ? "animate-spin" : ""} />
+                  {llm.modelsLoading ? "Loading..." : "Refresh"}
                 </button>
               </div>
-              {catalog.length > 0 ? (
+              {llm.models.length > 0 ? (
                 <select
-                  value={settings.llm_model}
-                  onChange={(e) => setSettings((p) => ({ ...p, llm_model: e.target.value }))}
+                  value={llm.selectedModel}
+                  onChange={(e) => llm.selectModel(e.target.value)}
                   data-testid="llm-model-select"
                   className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:border-amber-500/50"
                 >
-                  <option value="">Select a model... ({catalog.length} found)</option>
-                  {catalog.map((m) => (
+                  <option value="">Select a model... ({llm.models.length} found, {llm.modelsSource})</option>
+                  {llm.models.map((m) => (
                     <option key={m} value={m}>{m}</option>
                   ))}
                 </select>
               ) : (
-                <input value={settings.llm_model} onChange={(e) => setSettings((p) => ({ ...p, llm_model: e.target.value }))}
-                  placeholder={
-                    activeProvider === "openai" ? "e.g. gpt-4o-mini (save key first, then Refresh)" :
-                    activeProvider === "anthropic" ? "e.g. claude-sonnet-4-0 (save key first, then Refresh)" :
-                    activeProvider === "azure" ? "deployment name, e.g. gpt-4o" :
-                    "e.g. llama3.2, qwen2.5:7b - or hit Re-detect"
-                  }
+                <input
+                  value={llm.selectedModel}
+                  onChange={(e) => llm.selectModel(e.target.value)}
+                  placeholder={selected?.id === "azure" ? "deployment name, e.g. gpt-4o" : "Save, then Refresh - or type a name"}
                   data-testid="llm-model-input"
-                  className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-amber-500/50" />
+                  className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-amber-500/50"
+                />
               )}
-              {catalogNote && <p className="text-[10px] text-amber-400/90 mt-1">{catalogNote}</p>}
-              <p className="text-[10px] text-zinc-500 mt-1">Used for Giskard judges and the Chat page. Saved to backend.</p>
+              {llm.modelsNote && <p className="text-[10px] text-amber-400/90 mt-1">{llm.modelsNote}</p>}
             </div>
           </div>
 
-          {!llmOk && (
-            <div className="mt-3 p-3 rounded-lg bg-zinc-800/50 border border-zinc-800">
-              <p className="text-xs text-zinc-300 font-medium mb-2">GPU Opportunity</p>
-              <p className="text-[11px] text-zinc-500">High-performance GPU detected. Install LM Studio or Ollama to run Giskard scans locally without cloud API keys. <a href="https://lmstudio.ai" className="text-amber-500 hover:underline" target="_blank" rel="noreferrer">Download LM Studio</a></p>
+          {llm.gpus.length > 1 && (
+            <div className="mt-3">
+              <label className="text-xs text-zinc-300 mb-1 flex items-center gap-1"><Cpu size={12} /> GPU target</label>
+              <select
+                value={llm.gpuIndex}
+                onChange={(e) => llm.selectGpu(Number(e.target.value))}
+                data-testid="llm-gpu-select"
+                className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:border-amber-500/50"
+              >
+                {llm.gpus.map((g) => (
+                  <option key={g.index} value={g.index}>
+                    [{g.index}] {g.name} - {g.free_mb} MB free
+                  </option>
+                ))}
+              </select>
             </div>
+          )}
+          {llm.gpus.length === 1 && (
+            <p className="mt-2 text-[10px] text-zinc-500 flex items-center gap-1">
+              <Wifi size={10} /> GPU: {llm.gpus[0].name} ({llm.gpus[0].free_mb} MB free)
+            </p>
           )}
         </div>
 
@@ -291,18 +322,20 @@ export function SettingsPage() {
             Default Scan Target
           </h2>
           <label className="text-xs text-zinc-300 mb-1 block">MCP Server URL</label>
-          <input value={settings.target_mcp_url} onChange={(e) => setSettings((p) => ({ ...p, target_mcp_url: e.target.value }))}
+          <input value={targetUrl} onChange={(e) => setTargetUrl(e.target.value)}
             placeholder="http://127.0.0.1:10746/mcp"
             className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder-zinc-500 focus:outline-none focus:border-amber-500/50" />
-          <p className="text-[10px] text-zinc-300 mt-1">Pre-filled on the Scans page when you click a discovered server.</p>
         </div>
 
         {/* Save */}
-        <button onClick={handleSave} disabled={saving}
-          className="flex items-center gap-2 px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:bg-zinc-700 text-black font-medium rounded-lg text-sm transition-colors">
-          {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
-          {saved ? "Saved!" : "Save Settings"}
-        </button>
+        <div>
+          <button onClick={handleSave} disabled={saving}
+            className="flex items-center gap-2 px-4 py-2 bg-amber-600 hover:bg-amber-500 disabled:bg-zinc-700 text-black font-medium rounded-lg text-sm transition-colors">
+            {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
+            {saved ? "Saved!" : "Save Settings"}
+          </button>
+          {saveError && <p className="mt-2 text-xs text-red-400">{saveError}</p>}
+        </div>
       </div>
     </div>
   );

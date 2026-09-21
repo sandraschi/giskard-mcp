@@ -1,7 +1,8 @@
 import { Bot, Loader2, MessageSquare, Send, User } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { api } from "../api/client";
+import { chatComplete, streamChat, type ChatMessage } from "../lib/provider";
+import { subscribeLlmSelectionSync, useLlmStore } from "../store/llm";
 
 interface Message {
   role: "user" | "assistant";
@@ -9,68 +10,75 @@ interface Message {
 }
 
 export function ChatPage() {
+  const llm = useLlmStore();
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "assistant",
       content:
-        "Hello! I use the LLM configured in Settings - local (LM Studio / Ollama) or a cloud vendor. Ask me anything about Giskard scans or security analysis.",
+        "Hello! I use the LLM selected in Settings - local engines are free, cloud vendors need a key. Ask me about Giskard scans or security analysis.",
     },
   ]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [llmOk, setLlmOk] = useState<boolean | null>(null);
-  const [llmModel, setLlmModel] = useState("");
-  const [llmProvider, setLlmProvider] = useState("");
+  const [streaming, setStreaming] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  const loadLlm = useCallback(async () => {
-    try {
-      const [s, d] = await Promise.all([api.getSettings(), api.detectLlm()]);
-      const cloud = ["openai", "anthropic", "azure"].includes(s.llm_provider || "");
-      setLlmModel(s.llm_model || d.model || "");
-      setLlmProvider(s.llm_provider || d.provider || "");
-      setLlmOk(cloud ? !!s.llm_model : d.success);
-    } catch {
-      setLlmOk(false);
-    }
+  useEffect(() => {
+    if (!llm.selectedProvider) llm.probeAll();
+    return subscribeLlmSelectionSync();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    loadLlm();
-  }, [loadLlm]);
-
-  useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, streaming]);
+
+  const ready = !!llm.selectedProvider && !!llm.selectedModel;
 
   const send = async () => {
-    if (!input.trim() || loading) return;
+    if (!input.trim() || loading || !ready) return;
     const userMsg: Message = { role: "user", content: input.trim() };
-    const history = [...messages, userMsg].filter((m) => m.content.length < 4000).slice(-20);
+    const history: ChatMessage[] = [...messages, userMsg]
+      .filter((m) => m.content.length < 4000)
+      .slice(-20)
+      .map((m) => ({ role: m.role, content: m.content }));
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
     setLoading(true);
+    setStreaming("");
 
-    // Via the backend proxy: keys stay server-side, any vendor works.
+    const provider = llm.selectedProvider;
+    const model = llm.selectedModel;
     try {
-      const res = await api.chat(history.map((m) => ({ role: m.role, content: m.content })));
-      setMessages((prev) => [...prev, { role: "assistant", content: res.content || "(empty response)" }]);
-      if (res.model) {
-        setLlmModel(res.model.replace(/^openai\/|^anthropic\/|^azure\//, ""));
-        setLlmProvider(res.provider || "");
-      }
-      setLlmOk(true);
-    } catch (e: any) {
-      const msg = String(e?.message || "Chat failed.");
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: /no llm configured/i.test(msg)
-            ? "No LLM configured yet. Go to Settings, pick a provider + model (and key for cloud vendors), Save - then chat here."
-            : `Error: ${msg} Check Settings - provider ${llmProvider || "unknown"}, model ${llmModel || "none"}.`,
+      let acc = "";
+      await streamChat(
+        provider,
+        model,
+        [{ role: "system", content: "You help with Giskard adversarial scan results and LLM security analysis." }, ...history],
+        (text) => {
+          acc += text;
+          setStreaming(acc);
         },
-      ]);
+      );
+      const finalText = acc.trim();
+      setStreaming("");
+      setMessages((prev) => [...prev, { role: "assistant", content: finalText || "(empty response)" }]);
+    } catch {
+      // Stream failed (or is unsupported) - fall back to one-shot.
+      try {
+        const text = await chatComplete(provider, model, [
+          { role: "system", content: "You help with Giskard adversarial scan results and LLM security analysis." },
+          ...history,
+        ]);
+        setStreaming("");
+        setMessages((prev) => [...prev, { role: "assistant", content: text || "(empty response)" }]);
+      } catch (e: any) {
+        setStreaming("");
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: `Error: ${e?.message || "Chat failed."} Check Settings.` },
+        ]);
+      }
     }
     setLoading(false);
   };
@@ -82,20 +90,19 @@ export function ChatPage() {
         Chat
       </h1>
 
-      {/* LLM status - driven by backend Settings, never hardcoded */}
+      {/* Provider/model status - from the shared LLM store */}
       <div className="mb-4 flex items-center gap-2 text-xs">
-        <span className={`w-2 h-2 rounded-full ${llmOk ? "bg-green-500" : llmOk === false ? "bg-red-500" : "bg-zinc-500"}`} />
+        <span className={`w-2 h-2 rounded-full ${ready ? "bg-green-500" : "bg-red-500"}`} />
         <span className="text-zinc-400">
-          {llmOk && llmModel ? `${llmProvider || "LLM"} - ${llmModel}` : llmOk ? "LLM detected, pick a model in Settings" : "No LLM detected"}
+          {ready ? `${llm.selectedProvider} - ${llm.selectedModel}` : "No LLM selected"}
         </span>
-        {(!llmOk || !llmModel) && (
+        {!ready && (
           <Link to="/settings" className="text-amber-400 hover:underline">Open Settings</Link>
         )}
       </div>
-      {llmOk === false && (
+      {!ready && (
         <div className="mb-4 p-3 rounded-lg bg-amber-500/5 border border-amber-500/20 text-sm text-amber-400">
-          No LLM reachable. Start LM Studio (:1234) or Ollama (:11434) - or configure a cloud vendor + key in
-          Settings.
+          No usable LLM. Pick a detected local engine or a keyed cloud vendor in Settings.
         </div>
       )}
 
@@ -127,13 +134,13 @@ export function ChatPage() {
             </div>
           </div>
         ))}
-        {loading && (
+        {(loading || streaming) && (
           <div className="flex gap-3">
             <div className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center">
               <Bot size={14} className="text-zinc-300" />
             </div>
-            <div className="rounded-xl px-4 py-2.5 bg-zinc-800/50 border border-zinc-800">
-              <Loader2 size={14} className="animate-spin text-zinc-500" />
+            <div className="rounded-xl px-4 py-2.5 bg-zinc-800/50 border border-zinc-800 text-sm text-zinc-300 max-w-[80%]">
+              {streaming || <Loader2 size={14} className="animate-spin text-zinc-500" />}
             </div>
           </div>
         )}
@@ -146,12 +153,13 @@ export function ChatPage() {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && send()}
-          placeholder="Ask about scan results, security analysis..."
-          className="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-2.5 text-sm text-zinc-200 placeholder-zinc-400 focus:outline-none focus:border-amber-500/50"
+          placeholder={ready ? "Ask about scan results, security analysis..." : "Select an LLM in Settings first..."}
+          disabled={!ready}
+          className="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-4 py-2.5 text-sm text-zinc-200 placeholder-zinc-400 focus:outline-none focus:border-amber-500/50 disabled:opacity-50"
         />
         <button
           onClick={send}
-          disabled={loading || !input.trim()}
+          disabled={loading || !input.trim() || !ready}
           className="p-2.5 bg-amber-600 hover:bg-amber-500 disabled:bg-zinc-700 rounded-lg transition-colors"
         >
           <Send size={16} className="text-black" />
