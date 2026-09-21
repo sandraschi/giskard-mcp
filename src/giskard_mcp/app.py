@@ -503,6 +503,36 @@ async def llm_chat(request):
     return JSONResponse({"success": True, "content": text})
 
 
+async def llm_test(request):
+    """Validate a provider without saving anything.
+
+    Body: {"provider": id, "api_key"?: typed-but-unsaved key,
+    "endpoint"?: custom/azure endpoint}. Returns {ok, models, source, note}.
+    ok is True only for a live list -- curated names without a key are
+    explicitly marked so the UI never reports them as a successful test.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"success": False, "error": "provider required"}, status_code=400)
+    provider = (body.get("provider") or "").strip()
+    if not provider:
+        return JSONResponse({"success": False, "error": "provider required"}, status_code=400)
+    from .llm_providers import get_provider, list_models
+
+    if not get_provider(provider):
+        return JSONResponse({"success": False, "error": f"Unknown provider '{provider}'"}, status_code=400)
+    result = await list_models(provider, (body.get("endpoint") or "").strip(), (body.get("api_key") or ""))
+    ok = result.get("source") == "live" and len(result.get("models", [])) > 0
+    if provider == "azure":
+        from .llm_providers import get_key as _get_key
+
+        has_key = bool((body.get("api_key") or "").strip() or _get_key("azure"))
+        ok = bool((body.get("endpoint") or "").strip()) and has_key
+        result["note"] = "Endpoint + key present. Azure has no list API -- type the deployment name as model."
+    return JSONResponse({"success": True, "ok": ok, **result})
+
+
 async def llm_chat_stream(request):
     """SSE chat stream, OpenAI-style chunks + [DONE]. Falls back to 1 chunk."""
     try:
@@ -743,6 +773,7 @@ routes = [
     Route("/api/llm/models", llm_models_std),
     Route("/api/llm/chat", llm_chat, methods=["POST"]),
     Route("/api/llm/chat/stream", llm_chat_stream, methods=["POST"]),
+    Route("/api/llm/test", llm_test, methods=["POST"]),
     Route("/api/settings/llm", settings_llm_get),
     Route("/api/settings/llm", settings_llm_post, methods=["POST"]),
     Route("/api/settings/llm/key", settings_llm_key_delete, methods=["DELETE"]),

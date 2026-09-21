@@ -125,6 +125,25 @@ async def test_standard_chat_validation(client):
     assert r.status_code == 400
 
 
+async def test_llm_test_endpoint_honest_without_key(client):
+    r = await client.post("/api/llm/test", json={"provider": "openai"}, timeout=20)
+    body = r.json()
+    assert r.status_code == 200
+    assert body["ok"] is False
+    assert body["source"] == "curated"
+    assert body.get("key_missing") is True
+    r = await client.post("/api/llm/test", json={"provider": "nope"}, timeout=15)
+    assert r.status_code == 400
+    r = await client.post("/api/llm/test", json={}, timeout=15)
+    assert r.status_code == 400
+
+
+async def test_list_models_override_key_not_persisted():
+    result = await llm.list_models("openai", "", "sk-typed-not-saved")
+    assert result["source"] in ("live", "curated")
+    assert llm.get_key("openai") == ""
+
+
 async def test_gpus_and_onboarding_shape(client):
     r = await client.get("/api/llm/gpus", timeout=30)
     assert r.status_code == 200 and "gpus" in r.json()

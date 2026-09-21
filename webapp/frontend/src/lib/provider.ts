@@ -146,6 +146,28 @@ export function fetchModels(provider: string, endpoint?: string): Promise<Models
   return request<ModelsResponse>(`/llm/models${qs}`);
 }
 
+export interface TestResult {
+  success: boolean;
+  ok: boolean;
+  provider: string;
+  models: string[];
+  source: ModelSource;
+  note?: string;
+  error?: string;
+}
+
+/** Validate a provider without saving: typed keys go in the POST body only. */
+export function testProvider(provider: string, apiKey?: string, endpoint?: string): Promise<TestResult> {
+  return request<TestResult>("/llm/test", {
+    method: "POST",
+    body: JSON.stringify({
+      provider,
+      ...(apiKey ? { api_key: apiKey } : {}),
+      ...(endpoint ? { endpoint } : {}),
+    }),
+  });
+}
+
 export function fetchOnboarding(): Promise<OnboardingState> {
   return request<OnboardingState>("/llm/onboarding");
 }

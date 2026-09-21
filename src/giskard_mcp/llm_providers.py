@@ -299,17 +299,27 @@ async def probe_all_locals() -> dict[str, dict[str, Any]]:
     return dict(results)
 
 
-async def list_models(provider_id: str, endpoint: str = "") -> dict[str, Any]:
-    """Model list with source flag. Cloud: live when keyed, else curated."""
+async def list_models(provider_id: str, endpoint: str = "", api_key: str = "") -> dict[str, Any]:
+    """Model list with source flag. Cloud: live when keyed, else curated.
+
+    api_key overrides the stored/env key for this call only (lets the Test
+    button validate a typed-but-unsaved key). Never persisted here.
+    """
     row = require_provider(provider_id)
     if row["kind"] == "local":
         reachable, models = await probe_local(provider_id, endpoint)
         return {"provider": provider_id, "models": models, "source": "live" if reachable else "none"}
     if provider_id == "azure":
         return {"provider": provider_id, "models": [], "source": "none", "note": "Enter the deployment name."}
-    key = get_key(provider_id)
+    key = (api_key or "").strip() or get_key(provider_id)
     if not key:
-        return {"provider": provider_id, "models": list(row["curated"]), "source": "curated"}
+        return {
+            "provider": provider_id,
+            "models": list(row["curated"]),
+            "source": "curated",
+            "key_missing": True,
+            "note": "Save a key for the live list. Curated names still work once keyed.",
+        }
     url = row["base_url"] + row["models_path"]
     headers = _auth_headers(row, key)
     if provider_id == "anthropic":

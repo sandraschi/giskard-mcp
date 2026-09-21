@@ -76,6 +76,7 @@ export function SettingsPage() {
       if (ok) {
         setSaved(true);
         setTimeout(() => setSaved(false), 2000);
+        await llm.probeAll();
       } else {
         setSaveError("Save failed - is the backend reachable?");
       }
@@ -97,14 +98,21 @@ export function SettingsPage() {
   const handleTestCard = async (id: string) => {
     setCardNote((p) => ({ ...p, [id]: "Probing..." }));
     try {
-      const { fetchModels } = await import("../lib/provider");
-      const data = await fetchModels(id);
-      setCardNote((p) => ({
-        ...p,
-        [id]: data.models.length > 0
-          ? `${data.models.length} model(s), source: ${data.source}`
-          : data.note || data.error || "No models found",
-      }));
+      const { testProvider } = await import("../lib/provider");
+      const isCloud = llm.providers.find((p) => p.id === id)?.kind === "cloud";
+      // Cloud cards validate the typed key when present, else the stored one.
+      const data = await testProvider(id, isCloud ? apiKey || undefined : undefined);
+      if (data.ok) {
+        setCardNote((p) => ({
+          ...p,
+          [id]: `Key valid - ${data.models.length} live model(s).${apiKey ? " Save Settings to keep it." : ""}`,
+        }));
+      } else {
+        setCardNote((p) => ({
+          ...p,
+          [id]: data.note || data.error || "Not reachable - check the endpoint.",
+        }));
+      }
       await llm.probeAll();
     } catch (e: any) {
       setCardNote((p) => ({ ...p, [id]: e.message }));
