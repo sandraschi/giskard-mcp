@@ -80,12 +80,12 @@ async def run_fleet_scan(
     - run_fleet_scan(mcp_url="http://127.0.0.1:10702/mcp", agent_description="Book search and management API")
     - run_fleet_scan(mcp_url="http://127.0.0.1:10746/mcp", profiles="prompt_injection")
     """
+    from .llm_providers import get_key
     from .scanner import (
         detect_llm_details,
         fetch_tools_from_mcp,
         is_cloud_vendor,
         pick_chat_model,
-        resolve_llm_key,
         run_giskard_scan,
     )
     from .store import load_app_settings, upsert_record
@@ -98,7 +98,7 @@ async def run_fleet_scan(
     if is_cloud_vendor(provider):
         llm_url = saved.get("llm_url", "")
         llm_model = saved.get("llm_model", "")
-        llm_key = resolve_llm_key(provider, saved.get("llm_api_key", ""))
+        llm_key = get_key(provider)
     else:
         llm_url = details.get("url") or saved.get("llm_url", "")
         llm_model = saved.get("llm_model", "") or pick_chat_model(details.get("models") or [])

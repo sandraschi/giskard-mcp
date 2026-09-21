@@ -34,6 +34,21 @@ START_TIME = time.time()
 
 app_settings = load_app_settings()
 
+# One-time migration: keys used to live in app_settings.json next to the
+# provider tag. Move them into the 0600 keystore, then drop the field.
+_migrated_key = (app_settings.pop("llm_api_key", "") or "").strip()
+_migrated_provider = (app_settings.get("llm_provider") or "").strip()
+if _migrated_key and _migrated_key != "not-needed" and _migrated_provider in ("openai", "anthropic", "azure"):
+    try:
+        from .llm_providers import get_key as _get_key
+        from .llm_providers import save_key as _save_key
+
+        if not _get_key(_migrated_provider):
+            _save_key(_migrated_provider, _migrated_key)
+        save_app_settings(app_settings)
+    except Exception:
+        pass
+
 # Hydrate in-memory history from disk (idempotent across re-imports).
 if not SCANS_STORE:
     SCANS_STORE.extend(load_records())
@@ -66,18 +81,24 @@ async def api_status(_request):
     )
 
 
+def _public_settings() -> dict:
+    """Settings safe for GET responses: selection + key flags, never bytes."""
+    from .llm_providers import keys_configured
+
+    return {
+        "success": True,
+        "llm_url": app_settings.get("llm_url", settings.llm_api_url),
+        "llm_model": app_settings.get("llm_model", settings.llm_model),
+        "llm_provider": app_settings.get("llm_provider", ""),
+        "llm_api_key_set": any(keys_configured().values()),
+        "keys_configured": keys_configured(),
+        "target_mcp_url": app_settings.get("target_mcp_url", ""),
+    }
+
+
 async def get_settings(_request):
     # The API key is never returned -- only whether one is stored.
-    return JSONResponse(
-        {
-            "success": True,
-            "llm_url": app_settings.get("llm_url", settings.llm_api_url),
-            "llm_model": app_settings.get("llm_model", settings.llm_model),
-            "llm_provider": app_settings.get("llm_provider", ""),
-            "llm_api_key_set": bool(app_settings.get("llm_api_key", "")),
-            "target_mcp_url": app_settings.get("target_mcp_url", ""),
-        }
-    )
+    return JSONResponse(_public_settings())
 
 
 async def save_settings(request):
@@ -85,14 +106,17 @@ async def save_settings(request):
     app_settings["llm_url"] = body.get("llm_url", app_settings.get("llm_url", settings.llm_api_url))
     app_settings["llm_model"] = body.get("llm_model", app_settings.get("llm_model", ""))
     app_settings["llm_provider"] = body.get("llm_provider", app_settings.get("llm_provider", ""))
-    # Only overwrite the stored key when a non-empty value is sent.
-    if (body.get("llm_api_key") or "").strip():
-        app_settings["llm_api_key"] = body["llm_api_key"].strip()
+    # Keys live in the keystore now; a key sent here is routed there.
+    _sent_key = (body.get("llm_api_key") or "").strip()
+    if _sent_key:
+        from .llm_providers import save_key
+
+        provider = (app_settings.get("llm_provider") or "").strip()
+        if provider in ("openai", "anthropic", "azure"):
+            save_key(provider, _sent_key)
     app_settings["target_mcp_url"] = body.get("target_mcp_url", app_settings.get("target_mcp_url", ""))
     save_app_settings(app_settings)
-    masked = {k: v for k, v in app_settings.items() if k != "llm_api_key"}
-    masked["llm_api_key_set"] = bool(app_settings.get("llm_api_key", ""))
-    return JSONResponse({"success": True, "settings": masked})
+    return JSONResponse({"success": True, "settings": _public_settings()})
 
 
 async def list_scans(_request):
@@ -122,10 +146,11 @@ def _resolve_llm(details: dict) -> tuple[str, str, str, str]:
     """Resolve (url, model, provider, api_key) for judges and chat.
 
     Cloud vendors need no live detection: saved provider + model + key
-    (or vendor env var) is enough. Local vendors prefer live detection
-    for the URL, saved settings for the model.
+    (keystore or vendor env var) is enough. Local vendors prefer live
+    detection for the URL, saved settings for the model.
     """
-    from .scanner import is_cloud_vendor, pick_chat_model, resolve_llm_key
+    from .llm_providers import get_key
+    from .scanner import is_cloud_vendor, pick_chat_model
 
     provider = (app_settings.get("llm_provider") or details.get("provider") or "local").strip() or "local"
     if provider in ("lm-studio", "ollama"):
@@ -133,8 +158,7 @@ def _resolve_llm(details: dict) -> tuple[str, str, str, str]:
     if is_cloud_vendor(provider):
         url = app_settings.get("llm_url", "")
         model = app_settings.get("llm_model", "")
-        key = resolve_llm_key(provider, app_settings.get("llm_api_key", ""))
-        return url, model, provider, key
+        return url, model, provider, get_key(provider)
     url = details.get("url") or app_settings.get("llm_url") or settings.llm_api_url
     model = app_settings.get("llm_model") or pick_chat_model(details.get("models") or [])
     return url, model, "local", ""
@@ -392,10 +416,10 @@ async def delete_target(request):
 
 
 async def chat(request):
-    """Chat completion proxy -- any vendor, keys stay server-side.
+    """Chat completion proxy -- saved selection, keys stay server-side.
 
-    Body: {"messages": [{role, content}...], "system": optional}.
-    Runs litellm in a worker thread (sync client) so the loop stays alive.
+    Body: {"messages": [{role, content}...], "system": optional,
+    "provider"?: override, "model"?: override, "endpoint"?: override}.
     """
     try:
         body = await request.json()
@@ -405,21 +429,186 @@ async def chat(request):
     if not messages:
         return JSONResponse({"success": False, "error": "messages required"}, status_code=400)
     system = (body.get("system") or "You help with Giskard adversarial scan results and LLM security analysis.").strip()
-    from .scanner import chat_completion, detect_llm_details
+    from .llm_providers import chat_complete
 
-    details = await detect_llm_details()
-    llm_url, llm_model, llm_provider, llm_key = _resolve_llm(details)
-    if not llm_url or not llm_model:
+    provider = (body.get("provider") or app_settings.get("llm_provider") or "").strip()
+    model = (body.get("model") or app_settings.get("llm_model") or "").strip()
+    endpoint = (body.get("endpoint") or app_settings.get("llm_url") or "").strip()
+    if not provider or not model:
         return JSONResponse(
             {"success": False, "error": "No LLM configured. Set provider + model in Settings."}, status_code=400
         )
     full = [{"role": "system", "content": system}]
     full += [m for m in messages if isinstance(m, dict)][:20]
-    fallbacks = [m for m in (details.get("models") or []) if "embed" not in m.lower() and m != llm_model][:2]
-    result = await asyncio.to_thread(chat_completion, full, llm_url, llm_model, llm_provider, llm_key, fallbacks)
-    if not result.get("success"):
-        return JSONResponse(result, status_code=502)
-    return JSONResponse(result)
+    try:
+        text = await chat_complete(provider, model, full, endpoint)
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)[:500]}, status_code=502)
+    return JSONResponse({"success": True, "content": text or "(empty response)", "model": model, "provider": provider})
+
+
+# ------------------------------------------------- standard /api/llm/* ---
+# Fleet-standard LLM surface (WEBAPP_SOTA_STANDARDS section VI + pilot
+# arxiv-mcp llm_providers.py). Legacy /api/v1/* routes below stay working.
+
+
+async def llm_providers(_request):
+    """Provider registry + live local detection. Never returns key bytes."""
+    from .llm_providers import probe_all_locals, public_provider_info
+
+    detected = await probe_all_locals()
+    providers = public_provider_info()
+    for p in providers:
+        if p["kind"] == "local":
+            info = detected.get(p["id"], {})
+            p["detected"] = bool(info.get("reachable"))
+            if info.get("models"):
+                p["models"] = info["models"]
+    return JSONResponse({"providers": providers})
+
+
+async def llm_models_std(request):
+    """Model catalog: ?provider=&endpoint=. {models, source: live|curated|none}."""
+    from .llm_providers import list_models
+
+    provider = request.query_params.get("provider", "").strip()
+    endpoint = request.query_params.get("endpoint", "").strip()
+    if not provider:
+        return JSONResponse({"success": False, "error": "provider required"}, status_code=400)
+    try:
+        result = await list_models(provider, endpoint)
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)[:200]}, status_code=400)
+    return JSONResponse({"success": True, **result})
+
+
+async def llm_chat(request):
+    """Standard chat proxy: {provider, model, messages[], endpoint?}."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"success": False, "error": "messages required"}, status_code=400)
+    provider = (body.get("provider") or "").strip()
+    model = (body.get("model") or "").strip()
+    messages = body.get("messages", [])
+    endpoint = (body.get("endpoint") or "").strip()
+    if not provider or not model or not messages:
+        return JSONResponse({"success": False, "error": "provider, model, messages required"}, status_code=400)
+    from .llm_providers import chat_complete
+
+    try:
+        text = await chat_complete(provider, model, messages, endpoint)
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)[:500]}, status_code=502)
+    return JSONResponse({"success": True, "content": text})
+
+
+async def llm_chat_stream(request):
+    """SSE chat stream, OpenAI-style chunks + [DONE]. Falls back to 1 chunk."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"success": False, "error": "messages required"}, status_code=400)
+    provider = (body.get("provider") or "").strip()
+    model = (body.get("model") or "").strip()
+    messages = body.get("messages", [])
+    endpoint = (body.get("endpoint") or "").strip()
+    if not provider or not model or not messages:
+        return JSONResponse({"success": False, "error": "provider, model, messages required"}, status_code=400)
+    from starlette.responses import StreamingResponse
+
+    from .llm_providers import chat_stream
+
+    return StreamingResponse(
+        chat_stream(provider, model, messages, endpoint),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+async def settings_llm_get(_request):
+    """Saved LLM selection + per-cloud key flags. Never returns key bytes."""
+    from .llm_providers import keys_configured
+
+    return JSONResponse(
+        {
+            "provider": app_settings.get("llm_provider", ""),
+            "endpoint": app_settings.get("llm_url", ""),
+            "model": app_settings.get("llm_model", ""),
+            "keys_configured": keys_configured(),
+        }
+    )
+
+
+async def settings_llm_post(request):
+    """Save selection; write-only api_key goes to the keystore."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"success": False, "error": "invalid JSON"}, status_code=400)
+    from .llm_providers import get_provider, save_key
+
+    provider = (body.get("provider") or "").strip()
+    if provider and not get_provider(provider):
+        return JSONResponse({"success": False, "error": f"Unknown provider '{provider}'"}, status_code=400)
+    if provider:
+        app_settings["llm_provider"] = provider
+    if "endpoint" in body:
+        app_settings["llm_url"] = (body.get("endpoint") or "").strip()
+    if "model" in body:
+        app_settings["llm_model"] = (body.get("model") or "").strip()
+    key_saved = False
+    api_key = (body.get("api_key") or "").strip()
+    if api_key:
+        try:
+            save_key(app_settings.get("llm_provider", ""), api_key)
+            key_saved = True
+        except Exception as e:
+            return JSONResponse({"success": False, "error": str(e)[:200]}, status_code=400)
+    save_app_settings(app_settings)
+    from .llm_providers import keys_configured as _keys_configured
+
+    return JSONResponse(
+        {
+            "success": True,
+            "key_saved": key_saved,
+            "settings": {
+                "provider": app_settings.get("llm_provider", ""),
+                "endpoint": app_settings.get("llm_url", ""),
+                "model": app_settings.get("llm_model", ""),
+                "keys_configured": _keys_configured(),
+            },
+        }
+    )
+
+
+async def settings_llm_key_delete(request):
+    """Forget one stored cloud key: DELETE /api/settings/llm/key?provider=."""
+    from .llm_providers import delete_key
+
+    provider = request.query_params.get("provider", "").strip()
+    if not provider:
+        return JSONResponse({"success": False, "error": "provider required"}, status_code=400)
+    try:
+        removed = delete_key(provider)
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)[:200]}, status_code=400)
+    return JSONResponse({"success": True, "removed": removed})
+
+
+async def llm_gpus(_request):
+    """Live GPU VRAM ([] when no GPU/driver)."""
+    from .llm_providers import gpu_vram
+
+    gpus = await asyncio.to_thread(gpu_vram)
+    return JSONResponse({"gpus": gpus})
+
+
+async def llm_onboarding(_request):
+    """Fresh-install facts: locals, configured clouds, recommended path."""
+    from .llm_providers import onboarding_state
+
+    return JSONResponse(onboarding_state())
 
 
 async def list_tools(_request):
@@ -523,6 +712,7 @@ routes = [
     Route("/", health),
     Route("/health", health),
     Route("/api/health", health),
+    Route("/api/v1/health", health),
     Route("/api/v1/status", api_status),
     Route("/api/v1/settings", get_settings),
     Route("/api/v1/settings", save_settings, methods=["PUT"]),
@@ -549,6 +739,15 @@ routes = [
     Route("/api/v1/skills", list_skills),
     Route("/api/v1/skills/{name}", get_skill),
     Route("/api/v1/chat", chat, methods=["POST"]),
+    Route("/api/llm/providers", llm_providers),
+    Route("/api/llm/models", llm_models_std),
+    Route("/api/llm/chat", llm_chat, methods=["POST"]),
+    Route("/api/llm/chat/stream", llm_chat_stream, methods=["POST"]),
+    Route("/api/settings/llm", settings_llm_get),
+    Route("/api/settings/llm", settings_llm_post, methods=["POST"]),
+    Route("/api/settings/llm/key", settings_llm_key_delete, methods=["DELETE"]),
+    Route("/api/llm/gpus", llm_gpus),
+    Route("/api/llm/onboarding", llm_onboarding),
     Route("/api/v1/diagnostics", diagnostics),
     # Mount path is stripped by Starlette, so the inner app serves from "/".
     # (http_app(path="/mcp") here double-prefixes and 404s -- fleet standard
