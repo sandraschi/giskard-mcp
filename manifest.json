@@ -1,7 +1,7 @@
 {
   "manifest_version": "0.2",
   "name": "giskard-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Automated adversarial red-teaming scans against local LLM agents using the Giskard library",
   "author": { "name": "Sandra Schipal" },
   "server": {
@@ -17,8 +17,11 @@
     }
   },
   "tools": [
-    { "name": "run_red_team_scan", "description": "Run an automated Giskard adversarial red-teaming scan against a local agent" },
-    { "name": "list_scans", "description": "List previously run red-team scans and their report paths" },
-    { "name": "get_scan_status", "description": "Return the current status of the Giskard Red-Team Node" }
+    { "name": "run_fleet_scan", "description": "Run a Giskard adversarial scan against a live MCP server" },
+    { "name": "list_fleet_servers", "description": "Discover MCP servers in the fleet port range" },
+    { "name": "get_scan_status", "description": "Return the current status of the Giskard Red-Team Node" },
+    { "name": "list_reports", "description": "List generated HTML vulnerability reports on disk" },
+    { "name": "get_scan", "description": "Return one persisted scan record with its issues" },
+    { "name": "get_report_summary", "description": "Scan record plus file metadata for one HTML report" }
   ]
 }

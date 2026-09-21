@@ -1,7 +1,8 @@
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 $Name = "giskard-mcp"
-$Version = "0.1.0"
+# Single source of truth: pyproject.toml (never hardcode here).
+$Version = (Get-Content "$Root\pyproject.toml" -Raw | Select-String -Pattern '(?m)^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
 $DistDir = "$Root\dist"
 $MCPBDir = "$Root\mcpb"
 
