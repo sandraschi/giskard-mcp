@@ -329,9 +329,22 @@ async def list_models(provider_id: str, endpoint: str = "", api_key: str = "") -
             resp = await client.get(url, headers=headers)
             resp.raise_for_status()
             models = _parse_model_list(row["tag_style"], resp.json())
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code if exc.response is not None else "?"
+        logger.warning("live model list for %s HTTP %s; curated fallback", provider_id, status)
+        if status in (401, 403):
+            error = f"{row['label']} rejected the key (HTTP {status}) -- check the key, then Save and Test again."
+        else:
+            error = f"{row['label']} HTTP {status}."
+        return {"provider": provider_id, "models": list(row["curated"]), "source": "curated", "error": error}
     except Exception as exc:
         logger.warning("live model list for %s failed (%s); curated fallback", provider_id, exc)
-        return {"provider": provider_id, "models": list(row["curated"]), "source": "curated"}
+        return {
+            "provider": provider_id,
+            "models": list(row["curated"]),
+            "source": "curated",
+            "error": f"{row['label']} unreachable ({exc})"[:200],
+        }
     if not models:
         return {"provider": provider_id, "models": list(row["curated"]), "source": "curated"}
     return {"provider": provider_id, "models": models, "source": "live"}
