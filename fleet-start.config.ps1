@@ -1,4 +1,4 @@
-﻿# Per-repo fleet start config for giskard-mcp
+# Per-repo fleet start config for giskard-mcp
 # Edit ports/backend target here - start.ps1 is fleet-standard.
 @{
     Name         = 'giskard-mcp'
@@ -10,6 +10,7 @@
         Kind          = 'uvicorn'
         UvicornTarget = 'giskard_mcp.app:app'
         SyncExtras    = @('dev')
+        SyncOnStart  = $true
         Env           = @{ WEB_PORT = '11056' }
     }
     Frontend = @{
